@@ -111,7 +111,7 @@ if (-not $SkipPath) {
 }
 
 if ($Launch) {
-    Start-Process -FilePath $appExe -WorkingDirectory $install.FullName -WindowStyle Hidden
+    Start-Process -FilePath $appExe -WorkingDirectory $install.FullName
 }
 
 Write-Output "Installed Lazyterm to $($install.FullName)"
