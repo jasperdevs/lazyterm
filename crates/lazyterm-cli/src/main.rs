@@ -47,6 +47,7 @@ enum HelpTopic {
     Run,
     Focus,
     Send,
+    Rename,
     Close,
     Restart,
     Split,
@@ -97,6 +98,7 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             "run" => parse_session_command(args, AgentKind::Codex, HelpTopic::Run),
             "focus" => parse_focus_command(args),
             "send" => parse_send_command(args),
+            "rename" => parse_rename_command(args),
             "close" => parse_optional_id_command(args, HelpTopic::Close, |id| {
                 ApiRequest::CloseSession { id }
             }),
@@ -143,6 +145,7 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "run" => Ok(ParsedCli::Help(HelpTopic::Run)),
                 "focus" => Ok(ParsedCli::Help(HelpTopic::Focus)),
                 "send" => Ok(ParsedCli::Help(HelpTopic::Send)),
+                "rename" => Ok(ParsedCli::Help(HelpTopic::Rename)),
                 "close" => Ok(ParsedCli::Help(HelpTopic::Close)),
                 "restart" => Ok(ParsedCli::Help(HelpTopic::Restart)),
                 "split" => Ok(ParsedCli::Help(HelpTopic::Split)),
@@ -325,6 +328,39 @@ fn parse_send_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, C
     }))
 }
 
+fn parse_rename_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
+    let mut id = None;
+    let mut title = Vec::new();
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCli::Help(HelpTopic::Rename)),
+            "--id" | "-i" => {
+                id = Some(next_value(&mut args, "--id", HelpTopic::Rename)?);
+            }
+            "--" => {
+                title.extend(args);
+                break;
+            }
+            _ if arg.starts_with('-') => {
+                return Err(CliError::new(
+                    format!("unknown option '{arg}'"),
+                    HelpTopic::Rename,
+                ));
+            }
+            _ => title.push(arg),
+        }
+    }
+
+    let title = title.join(" ");
+    if title.trim().is_empty() {
+        return Err(CliError::new("rename requires a title", HelpTopic::Rename));
+    }
+
+    Ok(ParsedCli::Request(ApiRequest::RenameSession { id, title }))
+}
+
 fn parse_layout_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
     let mut layout = None;
 
@@ -423,6 +459,7 @@ COMMANDS:
     run                create a codex session
     focus <id>         focus a session
     send <text>        send text to the active or selected session
+    rename <title>     rename the active or selected session
     split              create a second pane and tile the workspace
     maximize           return to the active pane
     restart [id]       restart the active or selected session
@@ -446,6 +483,7 @@ EXAMPLES:
     lazytermctl new --agent shell --task \"inspect the repo\"
     lazytermctl focus session-123
     lazytermctl send --enter \"cargo test\"
+    lazytermctl rename \"tests\"
     lazytermctl split
     lazytermctl restart shell-2
     lazytermctl close-others
@@ -501,6 +539,12 @@ Focus a session in the running app.
 lazytermctl send [--id <id>] [--enter] <text>
 
 Send text to a terminal. Without --id, the active pane receives it.
+"
+        .to_string(),
+        HelpTopic::Rename => "\
+lazytermctl rename [--id <id>] <title>
+
+Rename a terminal tab. Without --id, the active pane is renamed.
 "
         .to_string(),
         HelpTopic::Close => "\
@@ -711,6 +755,24 @@ mod tests {
                 id: Some("shell-2".to_string()),
                 text: "echo ok".to_string(),
                 enter: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_rename_for_active_or_target_session() {
+        assert_eq!(
+            parse(&["rename", "tests"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::RenameSession {
+                id: None,
+                title: "tests".to_string(),
+            })
+        );
+        assert_eq!(
+            parse(&["rename", "--id", "shell-2", "agent", "run"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::RenameSession {
+                id: Some("shell-2".to_string()),
+                title: "agent run".to_string(),
             })
         );
     }

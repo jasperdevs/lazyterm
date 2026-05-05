@@ -19,6 +19,10 @@ pub enum ApiRequest {
         text: String,
         enter: bool,
     },
+    RenameSession {
+        id: Option<String>,
+        title: String,
+    },
     CloseSession {
         id: Option<String>,
     },

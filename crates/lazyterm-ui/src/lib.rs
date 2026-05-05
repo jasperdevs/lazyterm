@@ -488,6 +488,30 @@ impl LazytermApp {
                 self.write_text_to_session(index, &text, enter);
                 ApiResponse::Ack
             }
+            ApiRequest::RenameSession { id, title } => {
+                let index = match id {
+                    Some(id) => {
+                        let Some(index) = self.session_index(&id) else {
+                            return ApiResponse::Error {
+                                message: format!("session '{id}' was not found"),
+                            };
+                        };
+                        index
+                    }
+                    None => self.active_session,
+                };
+                let title = title.trim();
+                if title.is_empty() {
+                    return ApiResponse::Error {
+                        message: "title cannot be empty".into(),
+                    };
+                }
+
+                self.sessions[index].summary.title = title.to_string();
+                self.sessions[index].summary.last_activity = "renamed".into();
+                self.persist_state();
+                ApiResponse::Ack
+            }
             ApiRequest::CloseSession { id } => {
                 if let Some(id) = id {
                     let Some(index) = self.session_index(&id) else {
