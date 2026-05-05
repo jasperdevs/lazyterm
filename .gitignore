@@ -1,5 +1,6 @@
 /target/
 /.omx/
+/research/
 
 # OS files
 .DS_Store

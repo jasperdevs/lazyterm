@@ -17,6 +17,9 @@
 - [x] Windows GUI launch without a separate console window
 - [x] Embedded Windows app icon generated from the black-background logo
 - [x] Terminal-first monochrome mux surface without dashboard/helper chrome
+- [x] Ignored external reference clones for cmux/mux, claude-squad, and seance
+- [x] cmux-style workspace sidebar with active shell rows and status metadata
+- [x] In-app settings panel for tab density, metadata, and terminal font size
 
 ## Next
 
