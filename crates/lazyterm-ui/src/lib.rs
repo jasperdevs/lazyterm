@@ -1,6 +1,6 @@
 use alacritty_terminal::{
     event::{Event as AlacrittyEvent, EventListener},
-    grid::Dimensions,
+    grid::{Dimensions, Scroll},
     term::{cell::Cell, cell::Flags, Config as AlacrittyConfig, Term as AlacrittyTerm},
     vte::ansi::{
         Color as AnsiColor, CursorShape, NamedColor as AnsiNamedColor, Processor as AnsiProcessor,
@@ -12,8 +12,8 @@ use gpui::{
     Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
     FontWeight, GlobalElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    SharedString, Size, StatefulInteractiveElement, Style, Styled, Subscription, UTF16Selection,
-    Window, WindowControlArea,
+    ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Style, Styled,
+    Subscription, UTF16Selection, Window, WindowControlArea,
 };
 use lazyterm_agents::{detect_status, AgentPreset, AGENT_PRESETS};
 use lazyterm_api::{
@@ -37,6 +37,7 @@ use std::time::Duration;
 const BG: u32 = 0x050505;
 const SIDEBAR: u32 = 0x0d0d0d;
 const SURFACE: u32 = 0x101010;
+const SURFACE_ACTIVE: u32 = 0x181818;
 const ROW_ACTIVE: u32 = 0x242424;
 const BORDER: u32 = 0x202020;
 const BORDER_ACTIVE: u32 = 0x8f8f8f;
@@ -48,8 +49,9 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const STATUSLINE_HEIGHT: f32 = 24.0;
-const SIDEBAR_WIDTH: f32 = 58.0;
+const SIDEBAR_WIDTH: f32 = 180.0;
 const COMMAND_PALETTE_WIDTH: f32 = 360.0;
+const COMMAND_PALETTE_MAX_HEIGHT: f32 = 560.0;
 const COMMAND_PALETTE_TOP: f32 = TITLEBAR_HEIGHT + 10.0;
 const DEFAULT_TERMINAL_PADDING: f32 = 16.0;
 const DEFAULT_SPLIT_RATIO: f32 = 0.5;
@@ -286,6 +288,10 @@ enum CommandKind {
     DefaultFont,
     FontDown,
     FontUp,
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollTop,
+    ScrollBottom,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -293,6 +299,23 @@ struct CommandItem {
     kind: CommandKind,
     label: String,
     shortcut: String,
+    meta: String,
+}
+
+impl CommandItem {
+    fn new(
+        kind: CommandKind,
+        label: impl Into<String>,
+        shortcut: impl Into<String>,
+        meta: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            label: label.into(),
+            shortcut: shortcut.into(),
+            meta: meta.into(),
+        }
+    }
 }
 
 impl LazytermApp {
@@ -586,6 +609,28 @@ impl LazytermApp {
             return modifiers.control || modifiers.alt || modifiers.platform || modifiers.function;
         }
 
+        if modifiers.shift {
+            match key {
+                "pageup" => {
+                    self.scroll_active_terminal(Scroll::PageUp);
+                    return true;
+                }
+                "pagedown" => {
+                    self.scroll_active_terminal(Scroll::PageDown);
+                    return true;
+                }
+                "home" if modifiers.control => {
+                    self.scroll_active_terminal(Scroll::Top);
+                    return true;
+                }
+                "end" if modifiers.control => {
+                    self.scroll_active_terminal(Scroll::Bottom);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
         if primary {
             match key {
                 "t" => {
@@ -741,6 +786,30 @@ impl LazytermApp {
 
     fn write_bytes_to_active_pty(&mut self, bytes: &[u8]) {
         self.write_bytes_to_session(self.active_session, bytes);
+    }
+
+    fn scroll_active_terminal(&mut self, scroll: Scroll) {
+        self.sessions[self.active_session].scroll_display(scroll);
+    }
+
+    fn scroll_terminal_from_wheel(
+        &mut self,
+        session_index: usize,
+        event: &ScrollWheelEvent,
+    ) -> bool {
+        let line_height = px(terminal_line_height(self.ui_settings.terminal_font_size));
+        let lines = match event.delta {
+            ScrollDelta::Lines(delta) => delta.y.round() as i32,
+            ScrollDelta::Pixels(delta) => (delta.y.as_f32() / line_height.as_f32()).round() as i32,
+        };
+
+        if lines == 0 {
+            return false;
+        }
+
+        self.active_session = session_index;
+        self.sessions[session_index].scroll_display(Scroll::Delta(lines));
+        true
     }
 
     fn write_text_to_session(&mut self, session_index: usize, text: &str, enter: bool) {
@@ -1054,6 +1123,10 @@ impl LazytermApp {
             CommandKind::DefaultFont => self.set_font_size(12.0),
             CommandKind::FontDown => self.adjust_font_size(-1.0),
             CommandKind::FontUp => self.adjust_font_size(1.0),
+            CommandKind::ScrollPageUp => self.scroll_active_terminal(Scroll::PageUp),
+            CommandKind::ScrollPageDown => self.scroll_active_terminal(Scroll::PageDown),
+            CommandKind::ScrollTop => self.scroll_active_terminal(Scroll::Top),
+            CommandKind::ScrollBottom => self.scroll_active_terminal(Scroll::Bottom),
         }
     }
 
@@ -1067,151 +1140,99 @@ impl LazytermApp {
         let agent_shortcut = |agent| agent_health_label(agent).to_string();
 
         vec![
-            CommandItem {
-                kind: CommandKind::NewShell,
-                label: "new shell".into(),
-                shortcut: "ctrl+shift+t".into(),
-            },
-            CommandItem {
-                kind: CommandKind::NewCodex,
-                label: "new codex".into(),
-                shortcut: agent_shortcut(AgentKind::Codex),
-            },
-            CommandItem {
-                kind: CommandKind::NewClaude,
-                label: "new claude".into(),
-                shortcut: agent_shortcut(AgentKind::Claude),
-            },
-            CommandItem {
-                kind: CommandKind::NewOpenCode,
-                label: "new opencode".into(),
-                shortcut: agent_shortcut(AgentKind::OpenCode),
-            },
-            CommandItem {
-                kind: CommandKind::NewGemini,
-                label: "new gemini".into(),
-                shortcut: agent_shortcut(AgentKind::Gemini),
-            },
-            CommandItem {
-                kind: CommandKind::NewAider,
-                label: "new aider".into(),
-                shortcut: agent_shortcut(AgentKind::Aider),
-            },
-            CommandItem {
-                kind: CommandKind::SplitPane,
-                label: "split pane".into(),
-                shortcut: "ctrl+shift+b".into(),
-            },
-            CommandItem {
-                kind: CommandKind::ToggleLayout,
-                label: layout_label.into(),
-                shortcut: "ctrl+shift+b".into(),
-            },
-            CommandItem {
-                kind: CommandKind::TileGrid,
-                label: "layout grid".into(),
-                shortcut: "layout".into(),
-            },
-            CommandItem {
-                kind: CommandKind::TileColumns,
-                label: "layout columns".into(),
-                shortcut: "layout".into(),
-            },
-            CommandItem {
-                kind: CommandKind::TileRows,
-                label: "layout rows".into(),
-                shortcut: "layout".into(),
-            },
-            CommandItem {
-                kind: CommandKind::MaximizePane,
-                label: "maximize pane".into(),
-                shortcut: "ctrl+shift+enter".into(),
-            },
-            CommandItem {
-                kind: CommandKind::FocusAttention,
-                label: "focus attention".into(),
-                shortcut: "ctrl+shift+u".into(),
-            },
-            CommandItem {
-                kind: CommandKind::FocusLeft,
-                label: "focus left".into(),
-                shortcut: "ctrl+alt+left".into(),
-            },
-            CommandItem {
-                kind: CommandKind::FocusRight,
-                label: "focus right".into(),
-                shortcut: "ctrl+alt+right".into(),
-            },
-            CommandItem {
-                kind: CommandKind::FocusUp,
-                label: "focus up".into(),
-                shortcut: "ctrl+alt+up".into(),
-            },
-            CommandItem {
-                kind: CommandKind::FocusDown,
-                label: "focus down".into(),
-                shortcut: "ctrl+alt+down".into(),
-            },
-            CommandItem {
-                kind: CommandKind::RestartPane,
-                label: "restart pane".into(),
-                shortcut: "ctrl+shift+r".into(),
-            },
-            CommandItem {
-                kind: CommandKind::ClosePane,
-                label: "close pane".into(),
-                shortcut: "ctrl+shift+w".into(),
-            },
-            CommandItem {
-                kind: CommandKind::CloseOtherPanes,
-                label: "close other panes".into(),
-                shortcut: "ctrl+shift+o".into(),
-            },
-            CommandItem {
-                kind: CommandKind::CopyTranscript,
-                label: "copy transcript".into(),
-                shortcut: "ctrl+shift+c".into(),
-            },
-            CommandItem {
-                kind: CommandKind::Paste,
-                label: "paste".into(),
-                shortcut: "ctrl+shift+v".into(),
-            },
-            CommandItem {
-                kind: CommandKind::DensityCompact,
-                label: "density compact".into(),
-                shortcut: "layout".into(),
-            },
-            CommandItem {
-                kind: CommandKind::DensityDefault,
-                label: "density default".into(),
-                shortcut: "layout".into(),
-            },
-            CommandItem {
-                kind: CommandKind::DensityRoomy,
-                label: "density roomy".into(),
-                shortcut: "layout".into(),
-            },
-            CommandItem {
-                kind: CommandKind::CompactFont,
-                label: "font compact".into(),
-                shortcut: "11px".into(),
-            },
-            CommandItem {
-                kind: CommandKind::DefaultFont,
-                label: "font default".into(),
-                shortcut: "12px".into(),
-            },
-            CommandItem {
-                kind: CommandKind::FontDown,
-                label: "smaller font".into(),
-                shortcut: "ctrl+shift+-".into(),
-            },
-            CommandItem {
-                kind: CommandKind::FontUp,
-                label: "larger font".into(),
-                shortcut: "ctrl+shift+=".into(),
-            },
+            CommandItem::new(CommandKind::NewShell, "new shell", "ctrl+shift+t", ""),
+            CommandItem::new(
+                CommandKind::NewCodex,
+                "new codex",
+                "",
+                agent_shortcut(AgentKind::Codex),
+            ),
+            CommandItem::new(
+                CommandKind::NewClaude,
+                "new claude",
+                "",
+                agent_shortcut(AgentKind::Claude),
+            ),
+            CommandItem::new(
+                CommandKind::NewOpenCode,
+                "new opencode",
+                "",
+                agent_shortcut(AgentKind::OpenCode),
+            ),
+            CommandItem::new(
+                CommandKind::NewGemini,
+                "new gemini",
+                "",
+                agent_shortcut(AgentKind::Gemini),
+            ),
+            CommandItem::new(
+                CommandKind::NewAider,
+                "new aider",
+                "",
+                agent_shortcut(AgentKind::Aider),
+            ),
+            CommandItem::new(CommandKind::SplitPane, "split pane", "ctrl+shift+b", ""),
+            CommandItem::new(CommandKind::ToggleLayout, layout_label, "", "layout"),
+            CommandItem::new(CommandKind::TileGrid, "grid", "", "layout"),
+            CommandItem::new(CommandKind::TileColumns, "columns", "", "layout"),
+            CommandItem::new(CommandKind::TileRows, "rows", "", "layout"),
+            CommandItem::new(
+                CommandKind::MaximizePane,
+                "maximize pane",
+                "ctrl+shift+enter",
+                "",
+            ),
+            CommandItem::new(
+                CommandKind::FocusAttention,
+                "focus attention",
+                "ctrl+shift+u",
+                "",
+            ),
+            CommandItem::new(CommandKind::FocusLeft, "focus left", "ctrl+alt+left", ""),
+            CommandItem::new(CommandKind::FocusRight, "focus right", "ctrl+alt+right", ""),
+            CommandItem::new(CommandKind::FocusUp, "focus up", "ctrl+alt+up", ""),
+            CommandItem::new(CommandKind::FocusDown, "focus down", "ctrl+alt+down", ""),
+            CommandItem::new(CommandKind::RestartPane, "restart pane", "ctrl+shift+r", ""),
+            CommandItem::new(CommandKind::ClosePane, "close pane", "ctrl+shift+w", ""),
+            CommandItem::new(
+                CommandKind::CloseOtherPanes,
+                "close other panes",
+                "ctrl+shift+o",
+                "",
+            ),
+            CommandItem::new(
+                CommandKind::CopyTranscript,
+                "copy transcript",
+                "ctrl+shift+c",
+                "",
+            ),
+            CommandItem::new(CommandKind::Paste, "paste", "ctrl+shift+v", ""),
+            CommandItem::new(
+                CommandKind::ScrollPageUp,
+                "scroll page up",
+                "shift+pageup",
+                "",
+            ),
+            CommandItem::new(
+                CommandKind::ScrollPageDown,
+                "scroll page down",
+                "shift+pagedown",
+                "",
+            ),
+            CommandItem::new(CommandKind::ScrollTop, "scroll top", "ctrl+shift+home", ""),
+            CommandItem::new(
+                CommandKind::ScrollBottom,
+                "scroll bottom",
+                "ctrl+shift+end",
+                "",
+            ),
+            CommandItem::new(CommandKind::DensityCompact, "compact density", "", "view"),
+            CommandItem::new(CommandKind::DensityDefault, "default density", "", "view"),
+            CommandItem::new(CommandKind::DensityRoomy, "roomy density", "", "view"),
+            CommandItem::new(CommandKind::CompactFont, "compact font", "", "11px"),
+            CommandItem::new(CommandKind::DefaultFont, "default font", "", "12px"),
+            CommandItem::new(CommandKind::FontDown, "smaller font", "ctrl+shift+-", ""),
+            CommandItem::new(CommandKind::FontUp, "larger font", "ctrl+shift+=", ""),
         ]
     }
 
@@ -1223,7 +1244,11 @@ impl LazytermApp {
 
         self.commands()
             .into_iter()
-            .filter(|command| command.label.contains(&query) || command.shortcut.contains(&query))
+            .filter(|command| {
+                command.label.contains(&query)
+                    || command.shortcut.contains(&query)
+                    || command.meta.contains(&query)
+            })
             .collect()
     }
 
@@ -1274,14 +1299,6 @@ impl LazytermApp {
         self.sessions
             .iter()
             .position(|session| session.summary.id.as_str() == id)
-    }
-
-    fn workspace_label(&self) -> String {
-        self.cwd
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.cwd.display().to_string())
     }
 
     fn toggle_command_palette(&mut self) {
@@ -1348,20 +1365,21 @@ impl LazytermApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .font_family("JetBrains Mono")
                     .child(
                         div()
                             .size(px(22.0))
-                            .rounded(px(6.0))
+                            .rounded(px(4.0))
                             .overflow_hidden()
                             .child(img("logoblackbackground.svg").size_full()),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(rgb(TEXT_MUTED))
-                            .child(SharedString::from(self.workspace_label())),
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(TEXT))
+                            .child("lazyterm"),
                     ),
             )
             .child(
@@ -1416,10 +1434,10 @@ impl LazytermApp {
             .justify_center()
             .w(px(28.0))
             .h(px(24.0))
-            .rounded(px(6.0))
+            .rounded(px(4.0))
             .border_1()
             .border_color(rgb(BORDER))
-            .bg(rgb(SURFACE))
+            .bg(rgb(BG))
             .when(label == "x", |this| {
                 this.window_control_area(WindowControlArea::Close)
             })
@@ -1451,7 +1469,6 @@ impl LazytermApp {
             .border_r_1()
             .border_color(rgb(BORDER))
             .bg(rgb(SIDEBAR))
-            .items_center()
             .px_1()
             .py_1()
             .child(
@@ -1480,22 +1497,22 @@ impl LazytermApp {
             _ => TEXT_SOFT,
         };
         let attention = session_needs_attention(session);
+        let tab_background = if active { SURFACE_ACTIVE } else { SIDEBAR };
 
         div()
             .flex()
             .items_center()
-            .justify_center()
             .relative()
             .w_full()
             .h(px(TAB_HEIGHT))
-            .rounded(px(6.0))
+            .rounded(px(4.0))
             .border_1()
             .border_color(rgb(if active || attention {
-                TEXT_SOFT
+                BORDER_ACTIVE
             } else {
                 BORDER
             }))
-            .bg(rgb(if active { ROW_ACTIVE } else { BG }))
+            .bg(rgb(tab_background))
             .hover(|this| this.bg(rgb(SURFACE)).border_color(rgb(TEXT_DIM)))
             .font_family("JetBrains Mono")
             .child(
@@ -1521,9 +1538,42 @@ impl LazytermApp {
             })
             .child(
                 div()
-                    .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
-                    .text_size(px(14.0))
-                    .child((index + 1).to_string()),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pl_3()
+                    .pr_2()
+                    .w_full()
+                    .child(
+                        div()
+                            .w(px(28.0))
+                            .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("{:02}", index + 1)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_color(rgb(if active { TEXT } else { TEXT_SOFT }))
+                                    .text_size(px(12.0))
+                                    .font_weight(if active {
+                                        FontWeight::BOLD
+                                    } else {
+                                        FontWeight::NORMAL
+                                    })
+                                    .child(SharedString::from(session.summary.title.clone())),
+                            )
+                            .child(
+                                div().text_color(rgb(TEXT_DIM)).text_size(px(10.0)).child(
+                                    SharedString::from(status_token(session.summary.status)),
+                                ),
+                            ),
+                    ),
             )
             .id(format!("session-tab-{index}"))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1673,7 +1723,7 @@ impl LazytermApp {
         &self,
         session_index: usize,
         focused: bool,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let session = &self.sessions[session_index];
         let mut terminal_grid = div().flex().flex_col();
@@ -1699,6 +1749,14 @@ impl LazytermApp {
                     )))
                     .id("terminal-transcript")
                     .overflow_y_scroll()
+                    .on_scroll_wheel(cx.listener(
+                        move |this, event: &ScrollWheelEvent, _window, cx| {
+                            if this.scroll_terminal_from_wheel(session_index, event) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        },
+                    ))
                     .child(terminal_grid),
             )
             .child(self.render_statusline(session_index, focused))
@@ -1790,8 +1848,10 @@ impl LazytermApp {
     }
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut commands = div().flex().flex_col().gap_2();
-        for (index, command) in self.filtered_commands().into_iter().enumerate() {
+        let filtered_commands = self.filtered_commands();
+        let has_commands = !filtered_commands.is_empty();
+        let mut commands = div().flex().flex_col().gap_1();
+        for (index, command) in filtered_commands.into_iter().enumerate() {
             commands = commands.child(self.render_command_action(
                 command,
                 index == self.command_palette_selection,
@@ -1799,11 +1859,25 @@ impl LazytermApp {
             ));
         }
 
+        if !has_commands {
+            commands = commands.child(
+                div()
+                    .min_h(px(34.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .text_color(rgb(TEXT_DIM))
+                    .text_size(px(12.0))
+                    .child("no matches"),
+            );
+        }
+
         div()
             .flex()
             .flex_col()
             .w(px(COMMAND_PALETTE_WIDTH))
-            .rounded(px(8.0))
+            .max_h(px(COMMAND_PALETTE_MAX_HEIGHT))
+            .rounded(px(6.0))
             .border_1()
             .border_color(rgb(BORDER_ACTIVE))
             .bg(rgb(BG))
@@ -1816,7 +1890,7 @@ impl LazytermApp {
                     .gap_1()
                     .p_2()
                     .child(self.render_command_query())
-                    .child(commands),
+                    .child(commands.id("command-list").overflow_y_scroll()),
             )
     }
 
@@ -1832,8 +1906,8 @@ impl LazytermApp {
             .justify_between()
             .min_h(px(36.0))
             .px_3()
-            .rounded(px(6.0))
-            .bg(rgb(if selected { ROW_ACTIVE } else { SURFACE }))
+            .rounded(px(4.0))
+            .bg(rgb(if selected { ROW_ACTIVE } else { BG }))
             .border_1()
             .border_color(rgb(if selected { TEXT_SOFT } else { BORDER }))
             .hover(|this| this.bg(rgb(ROW_ACTIVE)).border_color(rgb(TEXT_DIM)))
@@ -1850,7 +1924,7 @@ impl LazytermApp {
                     .justify_center()
                     .text_color(rgb(TEXT_DIM))
                     .text_size(px(11.0))
-                    .child(SharedString::from(command.shortcut.clone())),
+                    .child(SharedString::from(command_detail(&command))),
             )
             .id(format!("command-{:?}", command.kind))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1876,7 +1950,7 @@ impl LazytermApp {
             .justify_between()
             .min_h(px(36.0))
             .px_3()
-            .rounded(px(6.0))
+            .rounded(px(4.0))
             .bg(rgb(SURFACE))
             .border_1()
             .border_color(rgb(BORDER_ACTIVE))
@@ -2064,6 +2138,10 @@ impl TerminalSession {
             self.summary.status = SessionStatus::Failed;
         }
     }
+
+    fn scroll_display(&mut self, scroll: Scroll) {
+        self.terminal.scroll_display(scroll);
+    }
 }
 
 impl TerminalGrid {
@@ -2086,6 +2164,15 @@ impl TerminalGrid {
 
     fn drain_pty_writes(&mut self) -> Vec<Vec<u8>> {
         self.pty_writes.try_iter().collect()
+    }
+
+    fn scroll_display(&mut self, scroll: Scroll) {
+        self.term.scroll_display(scroll);
+    }
+
+    #[cfg(test)]
+    fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
     }
 
     fn resize(&mut self, size: TerminalSize) {
@@ -2238,8 +2325,8 @@ impl Element for TerminalInputElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        style.size.width = px(1.0).into();
-        style.size.height = px(1.0).into();
+        style.size.width = px(0.0).into();
+        style.size.height = px(0.0).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -2810,6 +2897,14 @@ fn status_token(status: SessionStatus) -> &'static str {
     }
 }
 
+fn command_detail(command: &CommandItem) -> String {
+    if !command.shortcut.is_empty() {
+        return command.shortcut.clone();
+    }
+
+    command.meta.clone()
+}
+
 fn session_needs_attention(session: &TerminalSession) -> bool {
     matches!(
         session.summary.status,
@@ -2819,11 +2914,9 @@ fn session_needs_attention(session: &TerminalSession) -> bool {
 
 fn notification_for_status(status: SessionStatus, output: &str) -> Option<String> {
     match status {
-        SessionStatus::Running => None,
-        SessionStatus::Waiting => Some("waiting".into()),
-        SessionStatus::NeedsInput => Some("needs input".into()),
+        SessionStatus::Running | SessionStatus::Waiting | SessionStatus::NeedsInput => None,
         SessionStatus::Failed => Some(first_non_empty_line(output).unwrap_or("failed").into()),
-        SessionStatus::Done => Some("done".into()),
+        SessionStatus::Done => None,
     }
 }
 
@@ -3248,12 +3341,13 @@ mod tests {
     fn status_notifications_are_terminal_sized() {
         assert_eq!(
             notification_for_status(SessionStatus::NeedsInput, "approve?"),
-            Some("needs input".into())
+            None
         );
         assert_eq!(
             notification_for_status(SessionStatus::Failed, "error: bad\nmore"),
             Some("error: bad".into())
         );
+        assert_eq!(notification_for_status(SessionStatus::Done, "done"), None);
         assert_eq!(notification_for_status(SessionStatus::Running, "ok"), None);
     }
 
@@ -3542,6 +3636,20 @@ mod tests {
 
         assert_eq!(rows[0].plain_text().trim_end(), "after");
         assert!(rows.iter().skip(1).all(|row| row.runs.is_empty()));
+    }
+
+    #[test]
+    fn terminal_grid_uses_native_scrollback() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+        assert_eq!(grid.display_offset(), 0);
+
+        grid.scroll_display(Scroll::PageUp);
+        assert!(grid.display_offset() > 0);
+
+        grid.scroll_display(Scroll::Bottom);
+        assert_eq!(grid.display_offset(), 0);
     }
 
     #[test]

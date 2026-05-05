@@ -56,9 +56,12 @@
 - [x] CLI/API text injection with `lazytermctl send [--id <id>] [--enter] <text>`
 - [x] Terminal-safe shortcut routing: Ctrl+C reaches the PTY, while Ctrl+V still pastes on Windows/Linux
 - [x] CLI/API mux controls for split, maximize, restart, and close
+- [x] Native terminal scrollback with mouse wheel and Shift+PageUp/PageDown controls
+- [x] Slop UI cleanup pass: richer vertical tabs, less duplicated status text, and scrollable command palette metadata
 
 ## Next
 
+- [ ] Add mouse reporting for full-screen TUI apps while preserving normal scrollback
 - [ ] Extend resize handles beyond two-pane layouts
 - [ ] Add agent pane presets with arguments and working-directory prompts
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
