@@ -13,6 +13,7 @@ pub(super) enum IconKind {
     CommandPalette,
     Minimize,
     Maximize,
+    Fullscreen,
     Close,
 }
 
@@ -24,6 +25,7 @@ impl IconKind {
             Self::CommandPalette => "icons/command.svg",
             Self::Minimize => "icons/minus.svg",
             Self::Maximize => "icons/maximize.svg",
+            Self::Fullscreen => "icons/fullscreen.svg",
             Self::Close => "icons/close.svg",
         }
     }
@@ -35,6 +37,7 @@ impl IconKind {
             Self::CommandPalette => "command palette",
             Self::Minimize => "minimize window",
             Self::Maximize => "maximize window",
+            Self::Fullscreen => "toggle fullscreen",
             Self::Close => "close window",
         }
     }
@@ -206,6 +209,14 @@ impl LazytermApp {
                 },
             ))
             .child(self.render_window_control_button(
+                IconKind::Fullscreen,
+                "window-fullscreen",
+                cx,
+                |window| {
+                    window.toggle_fullscreen();
+                },
+            ))
+            .child(self.render_window_control_button(
                 IconKind::Close,
                 "window-close",
                 cx,
@@ -220,7 +231,7 @@ impl LazytermApp {
             .absolute()
             .top(px(0.0))
             .left(px(self.sidebar_width() + 8.0))
-            .right(px(112.0))
+            .right(px(144.0))
             .h(px(7.0))
             .window_control_area(WindowControlArea::Drag)
             .id("window-top-drag-strip")

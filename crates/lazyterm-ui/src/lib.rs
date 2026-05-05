@@ -4385,6 +4385,7 @@ mod tests {
         assert_eq!(IconKind::CommandPalette.asset_path(), "icons/command.svg");
         assert_eq!(IconKind::Minimize.asset_path(), "icons/minus.svg");
         assert_eq!(IconKind::Maximize.asset_path(), "icons/maximize.svg");
+        assert_eq!(IconKind::Fullscreen.asset_path(), "icons/fullscreen.svg");
         assert_eq!(IconKind::Close.asset_path(), "icons/close.svg");
     }
 
