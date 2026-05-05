@@ -60,6 +60,7 @@
 - [x] Slop UI cleanup pass: richer vertical tabs, less duplicated status text, and scrollable command palette metadata
 - [x] Alternate-screen wheel input for full-screen terminal apps while preserving normal shell scrollback
 - [x] CLI/API pane renaming so vertical tabs can carry useful user-defined titles
+- [x] Bracketed paste support with newline normalization for normal shell paste
 
 ## Next
 

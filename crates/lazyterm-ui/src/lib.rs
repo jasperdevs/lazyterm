@@ -1025,7 +1025,9 @@ impl LazytermApp {
             return;
         };
 
-        self.write_bytes_to_active_pty(text.as_bytes());
+        let bracketed = self.sessions[self.active_session].uses_bracketed_paste();
+        let bytes = paste_bytes_for_terminal(&text, bracketed);
+        self.write_bytes_to_active_pty(&bytes);
     }
 
     fn copy_active_transcript(&self, cx: &mut Context<Self>) {
@@ -2176,6 +2178,10 @@ impl TerminalSession {
     fn uses_alternate_scroll(&self) -> bool {
         self.terminal.uses_alternate_scroll()
     }
+
+    fn uses_bracketed_paste(&self) -> bool {
+        self.terminal.uses_bracketed_paste()
+    }
 }
 
 impl TerminalGrid {
@@ -2208,6 +2214,10 @@ impl TerminalGrid {
         self.term
             .mode()
             .contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
+    }
+
+    fn uses_bracketed_paste(&self) -> bool {
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
     #[cfg(test)]
@@ -2969,6 +2979,15 @@ fn alternate_scroll_bytes(lines: i32) -> Vec<u8> {
     bytes
 }
 
+fn paste_bytes_for_terminal(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        let sanitized = text.replace('\x1b', "");
+        return format!("\x1b[200~{sanitized}\x1b[201~").into_bytes();
+    }
+
+    text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+}
+
 fn first_non_empty_line(output: &str) -> Option<&str> {
     output.lines().map(str::trim).find(|line| !line.is_empty())
 }
@@ -3709,12 +3728,40 @@ mod tests {
     }
 
     #[test]
+    fn paste_normalizes_newlines_without_bracketed_paste() {
+        assert_eq!(
+            paste_bytes_for_terminal("one\r\ntwo\nthree", false),
+            b"one\rtwo\rthree"
+        );
+    }
+
+    #[test]
+    fn paste_wraps_and_sanitizes_bracketed_paste() {
+        assert_eq!(
+            paste_bytes_for_terminal("one\x1b[31m\ntwo", true),
+            b"\x1b[200~one[31m\ntwo\x1b[201~"
+        );
+    }
+
+    #[test]
     fn terminal_grid_detects_alternate_scroll_mode() {
         let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
         assert!(!grid.uses_alternate_scroll());
 
         grid.feed(b"\x1b[?1049h");
         assert!(grid.uses_alternate_scroll());
+    }
+
+    #[test]
+    fn terminal_grid_detects_bracketed_paste_mode() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+        assert!(!grid.uses_bracketed_paste());
+
+        grid.feed(b"\x1b[?2004h");
+        assert!(grid.uses_bracketed_paste());
+
+        grid.feed(b"\x1b[?2004l");
+        assert!(!grid.uses_bracketed_paste());
     }
 
     #[test]
