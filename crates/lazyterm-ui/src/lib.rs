@@ -55,6 +55,7 @@ pub struct LazytermApp {
     initial_focus_done: bool,
     keystroke_observer: Option<Subscription>,
     command_palette_open: bool,
+    command_palette_query: String,
     ui_settings: UiSettings,
 }
 
@@ -138,6 +139,26 @@ struct TerminalInputElement {
     app: Entity<LazytermApp>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandKind {
+    NewShell,
+    SplitPane,
+    ToggleLayout,
+    RestartPane,
+    ClosePane,
+    CopyTranscript,
+    Paste,
+    FontDown,
+    FontUp,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CommandItem {
+    kind: CommandKind,
+    label: &'static str,
+    shortcut: &'static str,
+}
+
 impl LazytermApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -159,6 +180,7 @@ impl LazytermApp {
             initial_focus_done: false,
             keystroke_observer: None,
             command_palette_open: false,
+            command_palette_query: String::new(),
             ui_settings: UiSettings {
                 tile_sessions: false,
                 terminal_font_size: 12.0,
@@ -259,9 +281,34 @@ impl LazytermApp {
         let modifiers = keystroke.modifiers;
         let primary = modifiers.platform || (modifiers.control && modifiers.shift);
 
-        if self.command_palette_open && key == "escape" {
-            self.command_palette_open = false;
-            return true;
+        if self.command_palette_open {
+            match key {
+                "escape" => {
+                    self.command_palette_open = false;
+                    self.command_palette_query.clear();
+                    return true;
+                }
+                "backspace" => {
+                    self.command_palette_query.pop();
+                    return true;
+                }
+                "enter" => {
+                    if let Some(command) = self.filtered_commands().first().copied() {
+                        self.run_command(command.kind, cx);
+                        self.command_palette_open = false;
+                        self.command_palette_query.clear();
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+
+            if !modifiers.control && !modifiers.alt && !modifiers.platform && !modifiers.function {
+                if let Some(input) = keystroke.key_char.as_ref() {
+                    self.command_palette_query.push_str(input);
+                    return true;
+                }
+            }
         }
 
         if primary {
@@ -493,6 +540,88 @@ impl LazytermApp {
         self.ui_settings.tile_sessions = true;
     }
 
+    fn run_command(&mut self, command: CommandKind, cx: &mut Context<Self>) {
+        match command {
+            CommandKind::NewShell => self.create_terminal(),
+            CommandKind::SplitPane => self.split_workspace(),
+            CommandKind::ToggleLayout => self.toggle_tile_sessions(),
+            CommandKind::RestartPane => self.restart_active_terminal(),
+            CommandKind::ClosePane => self.close_active_terminal(),
+            CommandKind::CopyTranscript => self.copy_active_transcript(cx),
+            CommandKind::Paste => self.paste_clipboard(cx),
+            CommandKind::FontDown => self.adjust_font_size(-1.0),
+            CommandKind::FontUp => self.adjust_font_size(1.0),
+        }
+    }
+
+    fn commands(&self) -> Vec<CommandItem> {
+        let layout_label = if self.ui_settings.tile_sessions {
+            "single pane"
+        } else {
+            "tile panes"
+        };
+
+        vec![
+            CommandItem {
+                kind: CommandKind::NewShell,
+                label: "new shell",
+                shortcut: "ctrl+shift+t",
+            },
+            CommandItem {
+                kind: CommandKind::SplitPane,
+                label: "split pane",
+                shortcut: "ctrl+shift+b",
+            },
+            CommandItem {
+                kind: CommandKind::ToggleLayout,
+                label: layout_label,
+                shortcut: "ctrl+shift+b",
+            },
+            CommandItem {
+                kind: CommandKind::RestartPane,
+                label: "restart pane",
+                shortcut: "ctrl+shift+r",
+            },
+            CommandItem {
+                kind: CommandKind::ClosePane,
+                label: "close pane",
+                shortcut: "ctrl+shift+w",
+            },
+            CommandItem {
+                kind: CommandKind::CopyTranscript,
+                label: "copy transcript",
+                shortcut: "ctrl+shift+c",
+            },
+            CommandItem {
+                kind: CommandKind::Paste,
+                label: "paste",
+                shortcut: "ctrl+shift+v",
+            },
+            CommandItem {
+                kind: CommandKind::FontDown,
+                label: "smaller font",
+                shortcut: "ctrl+shift+-",
+            },
+            CommandItem {
+                kind: CommandKind::FontUp,
+                label: "larger font",
+                shortcut: "ctrl+shift+=",
+            },
+        ]
+    }
+
+    fn filtered_commands(&self) -> Vec<CommandItem> {
+        let query = self.command_palette_query.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return self.commands();
+        }
+
+        self.commands()
+            .into_iter()
+            .filter(|command| command.label.contains(&query) || command.shortcut.contains(&query))
+            .collect()
+    }
+
     fn focus_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }
@@ -511,6 +640,9 @@ impl LazytermApp {
 
     fn toggle_command_palette(&mut self) {
         self.command_palette_open = !self.command_palette_open;
+        if !self.command_palette_open {
+            self.command_palette_query.clear();
+        }
     }
 
     fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -899,6 +1031,27 @@ impl LazytermApp {
     }
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut commands = div().flex().flex_col().gap_2();
+        for command in self.filtered_commands() {
+            commands = commands.child(self.render_command_action(command, cx));
+        }
+        if self.filtered_commands().is_empty() {
+            commands = commands.child(
+                div()
+                    .min_h(px(36.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded(px(7.0))
+                    .bg(rgb(BG))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .text_color(rgb(TEXT_DIM))
+                    .text_size(px(12.0))
+                    .child("no command"),
+            );
+        }
+
         div()
             .flex()
             .flex_col()
@@ -951,70 +1104,15 @@ impl LazytermApp {
                     .flex_col()
                     .gap_2()
                     .p_3()
-                    .child(self.render_command_action(
-                        "new shell",
-                        "ctrl+shift+t",
-                        "command-new-shell",
-                        cx,
-                        |this, _, _| this.create_terminal(),
-                    ))
-                    .child(self.render_command_action(
-                        "split pane",
-                        "ctrl+shift+b",
-                        "command-split-pane",
-                        cx,
-                        |this, _, _| this.split_workspace(),
-                    ))
-                    .child(self.render_command_action(
-                        if self.ui_settings.tile_sessions {
-                            "single pane"
-                        } else {
-                            "tile panes"
-                        },
-                        "ctrl+shift+b",
-                        "command-toggle-layout",
-                        cx,
-                        |this, _, _| this.toggle_tile_sessions(),
-                    ))
-                    .child(self.render_command_action(
-                        "restart pane",
-                        "ctrl+shift+r",
-                        "command-restart-pane",
-                        cx,
-                        |this, _, _| this.restart_active_terminal(),
-                    ))
-                    .child(self.render_command_action(
-                        "close pane",
-                        "ctrl+shift+w",
-                        "command-close-pane",
-                        cx,
-                        |this, _, _| this.close_active_terminal(),
-                    ))
-                    .child(self.render_command_action(
-                        "copy transcript",
-                        "ctrl+shift+c",
-                        "command-copy-transcript",
-                        cx,
-                        |this, _, cx| this.copy_active_transcript(cx),
-                    ))
-                    .child(self.render_command_action(
-                        "paste",
-                        "ctrl+shift+v",
-                        "command-paste",
-                        cx,
-                        |this, _, cx| this.paste_clipboard(cx),
-                    ))
-                    .child(self.render_font_size_row(cx)),
+                    .child(self.render_command_query())
+                    .child(commands),
             )
     }
 
     fn render_command_action(
         &self,
-        label: &'static str,
-        shortcut: &'static str,
-        id: &'static str,
+        command: CommandItem,
         cx: &mut Context<Self>,
-        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
         div()
             .flex()
@@ -1030,7 +1128,7 @@ impl LazytermApp {
                 div()
                     .text_color(rgb(TEXT_SOFT))
                     .text_size(px(12.0))
-                    .child(label),
+                    .child(command.label),
             )
             .child(
                 div()
@@ -1039,18 +1137,25 @@ impl LazytermApp {
                     .justify_center()
                     .text_color(rgb(TEXT_DIM))
                     .text_size(px(11.0))
-                    .child(shortcut),
+                    .child(command.shortcut),
             )
-            .id(id)
+            .id(format!("command-{:?}", command.kind))
             .on_click(cx.listener(move |this, _, window, cx| {
-                action(this, window, cx);
+                this.run_command(command.kind, cx);
                 this.command_palette_open = false;
+                this.command_palette_query.clear();
                 this.focus_terminal(window, cx);
                 cx.notify();
             }))
     }
 
-    fn render_font_size_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_command_query(&self) -> impl IntoElement {
+        let text = if self.command_palette_query.is_empty() {
+            "type command".into()
+        } else {
+            self.command_palette_query.clone()
+        };
+
         div()
             .flex()
             .items_center()
@@ -1060,55 +1165,23 @@ impl LazytermApp {
             .rounded(px(7.0))
             .bg(rgb(BG))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(BORDER_ACTIVE))
             .child(
                 div()
-                    .text_color(rgb(TEXT_SOFT))
+                    .text_color(rgb(if self.command_palette_query.is_empty() {
+                        TEXT_DIM
+                    } else {
+                        TEXT
+                    }))
                     .text_size(px(12.0))
-                    .child("font"),
+                    .child(SharedString::from(text)),
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(self.render_font_button("-", "font-size-down", cx, -1.0))
-                    .child(
-                        div()
-                            .w(px(32.0))
-                            .text_color(rgb(TEXT_MUTED))
-                            .text_size(px(11.0))
-                            .child(format!("{:.0}", self.ui_settings.terminal_font_size)),
-                    )
-                    .child(self.render_font_button("+", "font-size-up", cx, 1.0)),
+                    .text_color(rgb(TEXT_DIM))
+                    .text_size(px(11.0))
+                    .child("enter"),
             )
-    }
-
-    fn render_font_button(
-        &self,
-        label: &'static str,
-        id: &'static str,
-        cx: &mut Context<Self>,
-        delta: f32,
-    ) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .size(px(24.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(BG))
-            .text_color(rgb(TEXT_SOFT))
-            .text_size(px(12.0))
-            .child(label)
-            .id(id)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.adjust_font_size(delta);
-                this.focus_terminal(window, cx);
-                cx.notify();
-            }))
     }
 }
 

@@ -33,6 +33,7 @@
 - [x] Clean Windows shell launch with PowerShell profiles disabled by default for faster, predictable agent panes
 - [x] Command palette for pane/session actions instead of a settings sidebar
 - [x] Split command creates a second pane when only one pane exists
+- [x] Searchable command palette query with Enter-to-run command execution
 
 ## Next
 
@@ -40,7 +41,7 @@
 - [ ] Replace demo sessions with persisted session state
 - [ ] Add real split-pane resize handles
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
-- [ ] Add searchable command palette input and persistent preferences
+- [ ] Add persistent preferences
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates
