@@ -2944,6 +2944,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "gpui",
+ "lazyterm-agents",
  "lazyterm-api",
  "lazyterm-core",
  "lazyterm-pty",

@@ -14,6 +14,7 @@ use gpui::{
     Render, SharedString, Size, StatefulInteractiveElement, Style, Styled, Subscription,
     UTF16Selection, Window,
 };
+use lazyterm_agents::detect_status;
 use lazyterm_api::{ApiRequest, ApiResponse};
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
@@ -193,8 +194,11 @@ enum CommandKind {
     ToggleLayout,
     RestartPane,
     ClosePane,
+    CloseOtherPanes,
+    FocusAttention,
     CopyTranscript,
     Paste,
+    MaximizePane,
     CompactFont,
     DefaultFont,
     FontDown,
@@ -427,6 +431,14 @@ impl LazytermApp {
                     self.restart_active_terminal();
                     return true;
                 }
+                "u" => {
+                    self.focus_next_attention_session();
+                    return true;
+                }
+                "o" => {
+                    self.close_other_terminals();
+                    return true;
+                }
                 "v" => {
                     self.paste_clipboard(cx);
                     return true;
@@ -441,6 +453,10 @@ impl LazytermApp {
                 }
                 "b" => {
                     self.split_workspace();
+                    return true;
+                }
+                "enter" => {
+                    self.maximize_active_terminal();
                     return true;
                 }
                 "+" | "=" => {
@@ -544,8 +560,11 @@ impl LazytermApp {
                 .lines
                 .push(TerminalLine::error(format!("write failed: {error}")));
             session.summary.status = SessionStatus::Failed;
+            session.summary.notification = Some("write failed".into());
         } else {
             session.summary.status = SessionStatus::Running;
+            session.summary.notification = None;
+            session.summary.last_activity = "input sent".into();
         }
     }
 
@@ -609,6 +628,18 @@ impl LazytermApp {
         self.persist_state();
     }
 
+    fn close_other_terminals(&mut self) {
+        if self.sessions.len() <= 1 {
+            return;
+        }
+
+        let active = self.sessions.remove(self.active_session);
+        self.sessions.clear();
+        self.sessions.push(active);
+        self.active_session = 0;
+        self.persist_state();
+    }
+
     fn restart_active_terminal(&mut self) {
         let index = self.active_session + 1;
         let title = self.sessions[self.active_session].summary.title.clone();
@@ -622,6 +653,25 @@ impl LazytermApp {
             None,
         );
         self.persist_state();
+    }
+
+    fn maximize_active_terminal(&mut self) {
+        self.ui_settings.tile_sessions = false;
+        self.persist_ui_settings();
+    }
+
+    fn focus_next_attention_session(&mut self) {
+        if self.sessions.is_empty() {
+            return;
+        }
+
+        for offset in 1..=self.sessions.len() {
+            let index = (self.active_session + offset) % self.sessions.len();
+            if session_needs_attention(&self.sessions[index]) {
+                self.active_session = index;
+                return;
+            }
+        }
     }
 
     fn activate_session(&mut self, index: usize) {
@@ -708,8 +758,11 @@ impl LazytermApp {
             CommandKind::ToggleLayout => self.toggle_tile_sessions(),
             CommandKind::RestartPane => self.restart_active_terminal(),
             CommandKind::ClosePane => self.close_active_terminal(),
+            CommandKind::CloseOtherPanes => self.close_other_terminals(),
+            CommandKind::FocusAttention => self.focus_next_attention_session(),
             CommandKind::CopyTranscript => self.copy_active_transcript(cx),
             CommandKind::Paste => self.paste_clipboard(cx),
+            CommandKind::MaximizePane => self.maximize_active_terminal(),
             CommandKind::CompactFont => self.set_font_size(11.0),
             CommandKind::DefaultFont => self.set_font_size(12.0),
             CommandKind::FontDown => self.adjust_font_size(-1.0),
@@ -766,6 +819,16 @@ impl LazytermApp {
                 shortcut: "ctrl+shift+b",
             },
             CommandItem {
+                kind: CommandKind::MaximizePane,
+                label: "maximize pane",
+                shortcut: "ctrl+shift+enter",
+            },
+            CommandItem {
+                kind: CommandKind::FocusAttention,
+                label: "focus attention",
+                shortcut: "ctrl+shift+u",
+            },
+            CommandItem {
                 kind: CommandKind::RestartPane,
                 label: "restart pane",
                 shortcut: "ctrl+shift+r",
@@ -774,6 +837,11 @@ impl LazytermApp {
                 kind: CommandKind::ClosePane,
                 label: "close pane",
                 shortcut: "ctrl+shift+w",
+            },
+            CommandItem {
+                kind: CommandKind::CloseOtherPanes,
+                label: "close other panes",
+                shortcut: "ctrl+shift+o",
             },
             CommandItem {
                 kind: CommandKind::CopyTranscript,
@@ -1018,9 +1086,12 @@ impl LazytermApp {
         let active = index == self.active_session;
         let status_color = match session.summary.status {
             SessionStatus::Failed => BORDER_ACTIVE,
+            SessionStatus::NeedsInput => TEXT,
+            SessionStatus::Waiting => TEXT_MUTED,
             SessionStatus::Done => TEXT_DIM,
             _ => TEXT_SOFT,
         };
+        let attention = session_needs_attention(session);
 
         div()
             .flex()
@@ -1031,7 +1102,11 @@ impl LazytermApp {
             .h(px(TAB_HEIGHT))
             .rounded(px(6.0))
             .border_1()
-            .border_color(rgb(if active { TEXT_SOFT } else { BORDER }))
+            .border_color(rgb(if active || attention {
+                TEXT_SOFT
+            } else {
+                BORDER
+            }))
             .bg(rgb(if active { ROW_ACTIVE } else { BG }))
             .font_family("JetBrains Mono")
             .child(
@@ -1044,6 +1119,17 @@ impl LazytermApp {
                     .rounded_full()
                     .bg(rgb(if active { TEXT } else { status_color })),
             )
+            .when(attention, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .right(px(6.0))
+                        .top(px(5.0))
+                        .text_color(rgb(TEXT))
+                        .text_size(px(10.0))
+                        .child("!"),
+                )
+            })
             .child(
                 div()
                     .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
@@ -1236,6 +1322,7 @@ impl LazytermApp {
 
     fn render_statusline(&self, session_index: usize, focused: bool) -> impl IntoElement {
         let session = &self.sessions[session_index];
+        let notification = session.summary.notification.as_deref().unwrap_or("");
         div()
             .flex()
             .items_center()
@@ -1258,6 +1345,13 @@ impl LazytermApp {
                     .child(div().size(px(3.0)).rounded_full().bg(rgb(TEXT_DIM)))
                     .child(SharedString::from(session.summary.status.label())),
             )
+            .when(!notification.is_empty(), |this| {
+                this.child(
+                    div()
+                        .text_color(rgb(if focused { TEXT_SOFT } else { TEXT_DIM }))
+                        .child(SharedString::from(notification.to_string())),
+                )
+            })
     }
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1480,6 +1574,7 @@ impl TerminalSession {
         self.flush_terminal_replies();
         self.flush_startup_input();
         let output = normalize_pty_output(&String::from_utf8_lossy(output));
+        self.update_activity_from_output(&output);
         for segment in output.split_inclusive('\n') {
             if segment.ends_with('\n') {
                 self.pending_line.push_str(segment.trim_end_matches('\n'));
@@ -1488,7 +1583,23 @@ impl TerminalSession {
                 self.pending_line.push_str(segment);
             }
         }
-        self.summary.status = SessionStatus::Running;
+    }
+
+    fn update_activity_from_output(&mut self, output: &str) {
+        if output.trim().is_empty() {
+            return;
+        }
+
+        let status = detect_status(output);
+        self.summary.status = status;
+        self.summary.last_activity = match status {
+            SessionStatus::Running => "output".into(),
+            SessionStatus::Waiting => "waiting".into(),
+            SessionStatus::NeedsInput => "needs input".into(),
+            SessionStatus::Failed => "failed".into(),
+            SessionStatus::Done => "done".into(),
+        };
+        self.summary.notification = notification_for_status(status, output);
     }
 
     fn flush_startup_input(&mut self) {
@@ -2158,6 +2269,27 @@ fn session_context_label(session: &TerminalSession) -> String {
     }
 }
 
+fn session_needs_attention(session: &TerminalSession) -> bool {
+    matches!(
+        session.summary.status,
+        SessionStatus::NeedsInput | SessionStatus::Failed
+    )
+}
+
+fn notification_for_status(status: SessionStatus, output: &str) -> Option<String> {
+    match status {
+        SessionStatus::Running => None,
+        SessionStatus::Waiting => Some("waiting".into()),
+        SessionStatus::NeedsInput => Some("needs input".into()),
+        SessionStatus::Failed => Some(first_non_empty_line(output).unwrap_or("failed").into()),
+        SessionStatus::Done => Some("done".into()),
+    }
+}
+
+fn first_non_empty_line(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
 fn command_for_agent(agent: AgentKind) -> ShellCommand {
     match agent {
         AgentKind::Shell => ShellCommand::default_for_platform(),
@@ -2417,6 +2549,8 @@ mod tests {
         assert_eq!(command_for_agent(AgentKind::Codex).program, "codex");
         assert_eq!(command_for_agent(AgentKind::Claude).program, "claude");
         assert_eq!(command_for_agent(AgentKind::OpenCode).program, "opencode");
+        assert_eq!(command_for_agent(AgentKind::Gemini).program, "gemini");
+        assert_eq!(command_for_agent(AgentKind::Aider).program, "aider");
     }
 
     #[test]
@@ -2428,6 +2562,53 @@ mod tests {
         };
 
         assert_eq!(command_label(&command), "pwsh.exe -NoLogo -NoProfile");
+    }
+
+    #[test]
+    fn status_notifications_are_terminal_sized() {
+        assert_eq!(
+            notification_for_status(SessionStatus::NeedsInput, "approve?"),
+            Some("needs input".into())
+        );
+        assert_eq!(
+            notification_for_status(SessionStatus::Failed, "error: bad\nmore"),
+            Some("error: bad".into())
+        );
+        assert_eq!(notification_for_status(SessionStatus::Running, "ok"), None);
+    }
+
+    #[test]
+    fn attention_only_tracks_actionable_statuses() {
+        let (_sender, events) = mpsc::channel();
+        let mut session = TerminalSession {
+            summary: SessionSummary {
+                id: SessionId::new("shell-99"),
+                title: "test".into(),
+                agent: AgentKind::Shell,
+                status: SessionStatus::Running,
+                workspace: WorkspaceRef {
+                    cwd: PathBuf::from("."),
+                    git_branch: Some("main".into()),
+                },
+                command: "test".into(),
+                last_activity: "test".into(),
+                notification: None,
+            },
+            pty: None,
+            events,
+            terminal: TerminalGrid::new(TerminalSize::DEFAULT),
+            lines: Vec::new(),
+            pending_line: String::new(),
+            pending_startup_input: None,
+            terminal_size: TerminalSize::DEFAULT,
+        };
+
+        session.summary.status = SessionStatus::Done;
+        session.summary.notification = Some("done".into());
+        assert!(!session_needs_attention(&session));
+
+        session.summary.status = SessionStatus::NeedsInput;
+        assert!(session_needs_attention(&session));
     }
 
     #[test]

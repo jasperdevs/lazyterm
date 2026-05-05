@@ -40,10 +40,13 @@
 - [x] Persistent pane manifest in `%LOCALAPPDATA%/lazyterm/sessions.sqlite`
 - [x] App socket transport for the CLI/API
 - [x] Slop UI cleanup pass: slimmer vertical tabs, SVG logo, selected command row, fewer placeholders
+- [x] Agent attention state: needs-input/failed tab marker, statusline notification, focus-attention command
+- [x] Mux pane commands for maximize pane and close other panes
 
 ## Next
 
 - [ ] Deeper terminal-first chrome pass with screenshots against a visual reference
+- [ ] Add pane resize controls and directional split layout
 - [ ] Add agent pane presets with arguments, working-directory prompts, and health checks
 - [ ] Add real split-pane resize handles
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
