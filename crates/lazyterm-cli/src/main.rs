@@ -47,6 +47,10 @@ enum HelpTopic {
     Run,
     Focus,
     Send,
+    Close,
+    Restart,
+    Split,
+    Maximize,
     CloseOthers,
     Attention,
     Layout,
@@ -93,6 +97,16 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             "run" => parse_session_command(args, AgentKind::Codex, HelpTopic::Run),
             "focus" => parse_focus_command(args),
             "send" => parse_send_command(args),
+            "close" => parse_optional_id_command(args, HelpTopic::Close, |id| {
+                ApiRequest::CloseSession { id }
+            }),
+            "restart" => parse_optional_id_command(args, HelpTopic::Restart, |id| {
+                ApiRequest::RestartSession { id }
+            }),
+            "split" => parse_no_arg_command(args, HelpTopic::Split, ApiRequest::SplitWorkspace),
+            "maximize" => {
+                parse_no_arg_command(args, HelpTopic::Maximize, ApiRequest::MaximizeSession)
+            }
             "close-others" => {
                 parse_no_arg_command(args, HelpTopic::CloseOthers, ApiRequest::CloseOtherSessions)
             }
@@ -129,6 +143,10 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "run" => Ok(ParsedCli::Help(HelpTopic::Run)),
                 "focus" => Ok(ParsedCli::Help(HelpTopic::Focus)),
                 "send" => Ok(ParsedCli::Help(HelpTopic::Send)),
+                "close" => Ok(ParsedCli::Help(HelpTopic::Close)),
+                "restart" => Ok(ParsedCli::Help(HelpTopic::Restart)),
+                "split" => Ok(ParsedCli::Help(HelpTopic::Split)),
+                "maximize" => Ok(ParsedCli::Help(HelpTopic::Maximize)),
                 "close-others" => Ok(ParsedCli::Help(HelpTopic::CloseOthers)),
                 "attention" => Ok(ParsedCli::Help(HelpTopic::Attention)),
                 "layout" => Ok(ParsedCli::Help(HelpTopic::Layout)),
@@ -158,6 +176,33 @@ fn parse_no_arg_command(
     }
 
     Ok(ParsedCli::Request(request))
+}
+
+fn parse_optional_id_command(
+    args: impl Iterator<Item = String>,
+    help: HelpTopic,
+    request: impl FnOnce(Option<String>) -> ApiRequest,
+) -> Result<ParsedCli, CliError> {
+    let mut id = None;
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCli::Help(help)),
+            "--id" | "-i" => {
+                id = Some(next_value(&mut args, "--id", help)?);
+            }
+            _ if arg.starts_with('-') => {
+                return Err(CliError::new(format!("unknown option '{arg}'"), help));
+            }
+            _ if id.is_none() => id = Some(arg),
+            _ => {
+                return Err(CliError::new(format!("unexpected argument '{arg}'"), help));
+            }
+        }
+    }
+
+    Ok(ParsedCli::Request(request(id)))
 }
 
 fn parse_session_command(
@@ -378,6 +423,10 @@ COMMANDS:
     run                create a codex session
     focus <id>         focus a session
     send <text>        send text to the active or selected session
+    split              create a second pane and tile the workspace
+    maximize           return to the active pane
+    restart [id]       restart the active or selected session
+    close [id]         close the active or selected session
     attention          focus the next pane that needs attention
     close-others       close every pane except the active one
     layout <mode>      set pane layout: grid, columns, rows
@@ -397,6 +446,8 @@ EXAMPLES:
     lazytermctl new --agent shell --task \"inspect the repo\"
     lazytermctl focus session-123
     lazytermctl send --enter \"cargo test\"
+    lazytermctl split
+    lazytermctl restart shell-2
     lazytermctl close-others
     lazytermctl layout columns
     lazytermctl density compact
@@ -450,6 +501,30 @@ Focus a session in the running app.
 lazytermctl send [--id <id>] [--enter] <text>
 
 Send text to a terminal. Without --id, the active pane receives it.
+"
+        .to_string(),
+        HelpTopic::Close => "\
+lazytermctl close [id]
+
+Close a terminal. Without an id, the active pane is closed.
+"
+        .to_string(),
+        HelpTopic::Restart => "\
+lazytermctl restart [id]
+
+Restart a terminal. Without an id, the active pane is restarted.
+"
+        .to_string(),
+        HelpTopic::Split => "\
+lazytermctl split
+
+Create a second pane when needed and enable tiled panes.
+"
+        .to_string(),
+        HelpTopic::Maximize => "\
+lazytermctl maximize
+
+Show only the active pane.
 "
         .to_string(),
         HelpTopic::CloseOthers => "\
@@ -637,6 +712,34 @@ mod tests {
                 text: "echo ok".to_string(),
                 enter: false,
             })
+        );
+    }
+
+    #[test]
+    fn parses_mux_control_commands() {
+        assert_eq!(
+            parse(&["close"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::CloseSession { id: None })
+        );
+        assert_eq!(
+            parse(&["close", "shell-2"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::CloseSession {
+                id: Some("shell-2".to_string()),
+            })
+        );
+        assert_eq!(
+            parse(&["restart", "--id", "shell-3"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::RestartSession {
+                id: Some("shell-3".to_string()),
+            })
+        );
+        assert_eq!(
+            parse(&["split"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SplitWorkspace)
+        );
+        assert_eq!(
+            parse(&["maximize"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::MaximizeSession)
         );
     }
 

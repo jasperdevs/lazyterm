@@ -19,6 +19,14 @@ pub enum ApiRequest {
         text: String,
         enter: bool,
     },
+    CloseSession {
+        id: Option<String>,
+    },
+    RestartSession {
+        id: Option<String>,
+    },
+    SplitWorkspace,
+    MaximizeSession,
     CloseOtherSessions,
     FocusAttention,
     SetLayout {

@@ -465,6 +465,38 @@ impl LazytermApp {
                 self.write_text_to_session(index, &text, enter);
                 ApiResponse::Ack
             }
+            ApiRequest::CloseSession { id } => {
+                if let Some(id) = id {
+                    let Some(index) = self.session_index(&id) else {
+                        return ApiResponse::Error {
+                            message: format!("session '{id}' was not found"),
+                        };
+                    };
+                    self.active_session = index;
+                }
+                self.close_active_terminal();
+                ApiResponse::Ack
+            }
+            ApiRequest::RestartSession { id } => {
+                if let Some(id) = id {
+                    let Some(index) = self.session_index(&id) else {
+                        return ApiResponse::Error {
+                            message: format!("session '{id}' was not found"),
+                        };
+                    };
+                    self.active_session = index;
+                }
+                self.restart_active_terminal();
+                ApiResponse::Ack
+            }
+            ApiRequest::SplitWorkspace => {
+                self.split_workspace();
+                ApiResponse::Ack
+            }
+            ApiRequest::MaximizeSession => {
+                self.maximize_active_terminal();
+                ApiResponse::Ack
+            }
             ApiRequest::CloseOtherSessions => {
                 self.close_other_terminals();
                 ApiResponse::Ack
@@ -1236,6 +1268,12 @@ impl LazytermApp {
 
     fn active_session(&self) -> &TerminalSession {
         &self.sessions[self.active_session]
+    }
+
+    fn session_index(&self, id: &str) -> Option<usize> {
+        self.sessions
+            .iter()
+            .position(|session| session.summary.id.as_str() == id)
     }
 
     fn workspace_label(&self) -> String {

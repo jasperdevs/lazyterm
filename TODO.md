@@ -55,6 +55,7 @@
 - [x] Command palette keyboard selection with Up/Down and Enter
 - [x] CLI/API text injection with `lazytermctl send [--id <id>] [--enter] <text>`
 - [x] Terminal-safe shortcut routing: Ctrl+C reaches the PTY, while Ctrl+V still pastes on Windows/Linux
+- [x] CLI/API mux controls for split, maximize, restart, and close
 
 ## Next
 
