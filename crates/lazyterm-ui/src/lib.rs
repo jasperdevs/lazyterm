@@ -15,7 +15,9 @@ use gpui::{
     UTF16Selection, Window,
 };
 use lazyterm_agents::detect_status;
-use lazyterm_api::{ApiRequest, ApiResponse};
+use lazyterm_api::{
+    ApiRequest, ApiResponse, TerminalDensity as ApiTerminalDensity, TileLayout as ApiTileLayout,
+};
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
 use lazyterm_sessions::SessionStore;
@@ -91,6 +93,16 @@ impl TileLayout {
             Self::Grid => "grid",
             Self::Columns => "columns",
             Self::Rows => "rows",
+        }
+    }
+}
+
+impl From<ApiTileLayout> for TileLayout {
+    fn from(value: ApiTileLayout) -> Self {
+        match value {
+            ApiTileLayout::Grid => Self::Grid,
+            ApiTileLayout::Columns => Self::Columns,
+            ApiTileLayout::Rows => Self::Rows,
         }
     }
 }
@@ -410,6 +422,14 @@ impl LazytermApp {
             }
             ApiRequest::FocusAttention => {
                 self.focus_next_attention_session();
+                ApiResponse::Ack
+            }
+            ApiRequest::SetLayout { layout } => {
+                self.set_tile_layout(TileLayout::from(layout));
+                ApiResponse::Ack
+            }
+            ApiRequest::SetDensity { density } => {
+                self.set_terminal_density(density);
                 ApiResponse::Ack
             }
         }
@@ -828,6 +848,14 @@ impl LazytermApp {
         self.ui_settings.terminal_font_size = font_size.clamp(10.0, 16.0);
         self.ui_settings.terminal_padding = padding.clamp(8.0, 24.0);
         self.persist_ui_settings();
+    }
+
+    fn set_terminal_density(&mut self, density: ApiTerminalDensity) {
+        match density {
+            ApiTerminalDensity::Compact => self.set_density(11.0, 10.0),
+            ApiTerminalDensity::Default => self.set_density(12.0, DEFAULT_TERMINAL_PADDING),
+            ApiTerminalDensity::Roomy => self.set_density(13.0, 22.0),
+        }
     }
 
     fn toggle_tile_sessions(&mut self) {

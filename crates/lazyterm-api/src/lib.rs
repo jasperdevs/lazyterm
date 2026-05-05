@@ -16,6 +16,12 @@ pub enum ApiRequest {
     },
     CloseOtherSessions,
     FocusAttention,
+    SetLayout {
+        layout: TileLayout,
+    },
+    SetDensity {
+        density: TerminalDensity,
+    },
     Status,
 }
 
@@ -24,4 +30,18 @@ pub enum ApiResponse {
     Ack,
     Sessions(Vec<SessionSummary>),
     Error { message: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TileLayout {
+    Grid,
+    Columns,
+    Rows,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TerminalDensity {
+    Compact,
+    Default,
+    Roomy,
 }

@@ -4,7 +4,7 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use lazyterm_api::{ApiRequest, ApiResponse};
+use lazyterm_api::{ApiRequest, ApiResponse, TerminalDensity, TileLayout};
 use lazyterm_core::AgentKind;
 
 const API_ADDR: &str = "127.0.0.1:47431";
@@ -48,6 +48,8 @@ enum HelpTopic {
     Focus,
     CloseOthers,
     Attention,
+    Layout,
+    Density,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -94,6 +96,8 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             "attention" => {
                 parse_no_arg_command(args, HelpTopic::Attention, ApiRequest::FocusAttention)
             }
+            "layout" => parse_layout_command(args),
+            "density" => parse_density_command(args),
             _ => Err(CliError::new(
                 format!("unknown command '{command}'"),
                 HelpTopic::General,
@@ -122,6 +126,8 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "focus" => Ok(ParsedCli::Help(HelpTopic::Focus)),
                 "close-others" => Ok(ParsedCli::Help(HelpTopic::CloseOthers)),
                 "attention" => Ok(ParsedCli::Help(HelpTopic::Attention)),
+                "layout" => Ok(ParsedCli::Help(HelpTopic::Layout)),
+                "density" => Ok(ParsedCli::Help(HelpTopic::Density)),
                 "help" => Ok(ParsedCli::Help(HelpTopic::General)),
                 _ => Err(CliError::new(
                     format!("unknown help topic '{topic}'"),
@@ -230,6 +236,67 @@ fn parse_focus_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, 
     Ok(ParsedCli::Request(ApiRequest::FocusSession { id }))
 }
 
+fn parse_layout_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
+    let mut layout = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCli::Help(HelpTopic::Layout)),
+            _ if arg.starts_with('-') => {
+                return Err(CliError::new(
+                    format!("unknown option '{arg}'"),
+                    HelpTopic::Layout,
+                ));
+            }
+            _ if layout.is_none() => layout = Some(parse_tile_layout(&arg)?),
+            _ => {
+                return Err(CliError::new(
+                    format!("unexpected argument '{arg}'"),
+                    HelpTopic::Layout,
+                ));
+            }
+        }
+    }
+
+    let layout = layout.ok_or_else(|| {
+        CliError::new("layout requires grid, columns, or rows", HelpTopic::Layout)
+    })?;
+
+    Ok(ParsedCli::Request(ApiRequest::SetLayout { layout }))
+}
+
+fn parse_density_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
+    let mut density = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCli::Help(HelpTopic::Density)),
+            _ if arg.starts_with('-') => {
+                return Err(CliError::new(
+                    format!("unknown option '{arg}'"),
+                    HelpTopic::Density,
+                ));
+            }
+            _ if density.is_none() => density = Some(parse_terminal_density(&arg)?),
+            _ => {
+                return Err(CliError::new(
+                    format!("unexpected argument '{arg}'"),
+                    HelpTopic::Density,
+                ));
+            }
+        }
+    }
+
+    let density = density.ok_or_else(|| {
+        CliError::new(
+            "density requires compact, default, or roomy",
+            HelpTopic::Density,
+        )
+    })?;
+
+    Ok(ParsedCli::Request(ApiRequest::SetDensity { density }))
+}
+
 fn send_request(request: &ApiRequest) -> std::io::Result<ApiResponse> {
     let mut stream = TcpStream::connect(API_ADDR)?;
     serde_json::to_writer(&mut stream, request).map_err(std::io::Error::other)?;
@@ -267,6 +334,8 @@ COMMANDS:
     focus <id>         focus a session
     attention          focus the next pane that needs attention
     close-others       close every pane except the active one
+    layout <mode>      set pane layout: grid, columns, rows
+    density <mode>     set terminal density: compact, default, roomy
     help [command]     show help for a command
 
 OPTIONS:
@@ -281,6 +350,8 @@ EXAMPLES:
     lazyterm new --agent shell --task \"inspect the repo\"
     lazyterm focus session-123
     lazyterm close-others
+    lazyterm layout columns
+    lazyterm density compact
 ",
         ),
         HelpTopic::List => "\
@@ -339,6 +410,18 @@ lazyterm attention
 Focus the next pane that needs input or failed.
 "
         .to_string(),
+        HelpTopic::Layout => "\
+lazyterm layout <grid|columns|rows>
+
+Set the tiled pane layout.
+"
+        .to_string(),
+        HelpTopic::Density => "\
+lazyterm density <compact|default|roomy>
+
+Set terminal font and padding density.
+"
+        .to_string(),
     }
 }
 
@@ -387,6 +470,30 @@ fn parse_agent_kind(value: &str, help: HelpTopic) -> Result<AgentKind, CliError>
                 "unknown agent kind '{value}' (expected shell, codex, claude, opencode, gemini, or aider)"
             ),
             help,
+        )),
+    }
+}
+
+fn parse_tile_layout(value: &str) -> Result<TileLayout, CliError> {
+    match value.to_ascii_lowercase().as_str() {
+        "grid" => Ok(TileLayout::Grid),
+        "columns" | "column" | "cols" => Ok(TileLayout::Columns),
+        "rows" | "row" => Ok(TileLayout::Rows),
+        _ => Err(CliError::new(
+            format!("unknown layout '{value}' (expected grid, columns, or rows)"),
+            HelpTopic::Layout,
+        )),
+    }
+}
+
+fn parse_terminal_density(value: &str) -> Result<TerminalDensity, CliError> {
+    match value.to_ascii_lowercase().as_str() {
+        "compact" => Ok(TerminalDensity::Compact),
+        "default" | "normal" => Ok(TerminalDensity::Default),
+        "roomy" | "large" => Ok(TerminalDensity::Roomy),
+        _ => Err(CliError::new(
+            format!("unknown density '{value}' (expected compact, default, or roomy)"),
+            HelpTopic::Density,
         )),
     }
 }
@@ -462,6 +569,22 @@ mod tests {
         assert_eq!(
             parse(&["attention"]).expect("parsed"),
             ParsedCli::Request(ApiRequest::FocusAttention)
+        );
+    }
+
+    #[test]
+    fn parses_layout_and_density_commands() {
+        assert_eq!(
+            parse(&["layout", "columns"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SetLayout {
+                layout: TileLayout::Columns,
+            })
+        );
+        assert_eq!(
+            parse(&["density", "compact"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SetDensity {
+                density: TerminalDensity::Compact,
+            })
         );
     }
 

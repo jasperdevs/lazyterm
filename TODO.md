@@ -46,6 +46,7 @@
 - [x] Persisted terminal density controls for compact/default/roomy layouts
 - [x] CLI/API pane controls for close-others and focus-attention
 - [x] Persisted pane layout modes for grid, columns, and rows
+- [x] CLI/API layout and density controls
 
 ## Next
 
