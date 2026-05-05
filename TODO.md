@@ -2,85 +2,26 @@
 
 ## Working Now
 
-- [x] Repo hygiene and CI polish
-- [x] Shared core/API type cleanup
-- [x] Session storage hardening
-- [x] Terminal and PTY boundary cleanup
-- [x] Agent preset/status detection cleanup
-- [x] CLI command shape cleanup
-- [x] GPUI app/UI polish
-- [x] Verification, licensing, and release-risk review
-- [x] Real keyboard input path in the GPUI shell surface
-- [x] Custom monochrome titlebar with the Lazyterm logo
-- [x] Streaming PTY-backed shell sessions in the GPUI surface
-- [x] Functional vertical terminal tabs with per-tab shell state
-- [x] Windows GUI launch without a separate console window
-- [x] Embedded Windows app icon generated from the black-background logo
-- [x] Terminal-first monochrome mux surface without dashboard/helper chrome
-- [x] Ignored external reference clones for cmux/mux, claude-squad, and seance
-- [x] Narrow vertical session rail with active shell state
-- [x] Compact in-app view panel for pane mode and terminal font size
-- [x] ASCII-only window chrome without emoji/symbol buttons
-- [x] Session controls for new, restart, close, and keyboard tab cycling
-- [x] Terminal key passthrough for paste, function keys, alt chords, and generic control chords
-- [x] Tiled multiplexer view for watching multiple shells at once
-- [x] Terminal surface takes focus on app launch
-- [x] Alacritty-backed terminal grid for ANSI parsing and cursor movement
-- [x] Alacritty terminal writeback replies forwarded to the PTY for Windows ConPTY protocol queries
-- [x] Per-cell foreground/background, bold, dim, inverse, underline, and cursor rendering from Alacritty
-- [x] Regenerated Windows app icon from the black-background Lazyterm logo
-- [x] Tighter monochrome chrome pass: narrow rail, cleaner split mode, and less placeholder copy
-- [x] Clean Windows shell launch with PowerShell profiles disabled by default for faster, predictable agent panes
-- [x] Command palette for pane/session actions instead of a settings sidebar
-- [x] Split command creates a second pane when only one pane exists
-- [x] Searchable command palette query with Enter-to-run command execution
-- [x] Palette text-input routing that does not leak search text into the active PTY
-- [x] Agent pane commands for Codex, Claude, and OpenCode
-- [x] Persistent UI settings in `%LOCALAPPDATA%/lazyterm/ui-settings.json`
-- [x] Persistent pane manifest in `%LOCALAPPDATA%/lazyterm/sessions.sqlite`
-- [x] App socket transport for the CLI/API
-- [x] Slop UI cleanup pass: slimmer vertical tabs, SVG logo, selected command row, fewer placeholders
-- [x] Agent attention state: needs-input/failed tab marker, statusline notification, focus-attention command
-- [x] Mux pane commands for maximize pane and close other panes
-- [x] Directional pane navigation with Ctrl+Alt+Arrow and command palette actions
-- [x] Persisted terminal density controls for compact/default/roomy layouts
-- [x] CLI/API pane controls for close-others and focus-attention
-- [x] Persisted pane layout modes for grid, columns, and rows
-- [x] CLI/API layout and density controls
-- [x] Drag resize handle for two-pane column/row layouts with persisted split ratio
-- [x] Production naming split: `lazyterm.exe` is the GUI app, `lazytermctl.exe` is the control CLI
-- [x] Agent preset health checks through the UI palette and CLI/API
-- [x] Deeper terminal-first chrome pass from visual reference: removed pane headers, trimmed palette chrome, and kept the terminal as the main surface
-- [x] Text input path cleanup: printable text routes through GPUI text input, while keydown handles terminal controls/navigation
-- [x] Command palette keyboard selection with Up/Down and Enter
-- [x] CLI/API text injection with `lazytermctl send [--id <id>] [--enter] <text>`
-- [x] Terminal-safe shortcut routing: Ctrl+C reaches the PTY, while Ctrl+V still pastes on Windows/Linux
-- [x] CLI/API mux controls for split, maximize, restart, and close
-- [x] Native terminal scrollback with mouse wheel and Shift+PageUp/PageDown controls
-- [x] Slop UI cleanup pass: richer vertical tabs, less duplicated status text, and scrollable command palette metadata
-- [x] Alternate-screen wheel input for full-screen terminal apps while preserving normal shell scrollback
-- [x] CLI/API pane renaming so vertical tabs can carry useful user-defined titles
-- [x] Bracketed paste support with newline normalization for normal shell paste
-- [x] Application cursor mode for arrow/Home/End keys in terminal apps
-- [x] Slop UI cleanup pass: stronger rail identity, quieter command palette details, and cleaner statusline hierarchy
-- [x] CI dependency policy runs only where the cargo-deny action is supported
-- [x] Persisted vertical rail width presets through command palette and `lazytermctl rail`
-- [x] Make compact rail the default first-run experience so the terminal owns the window
-- [x] Compact rail renders as a narrow number rail instead of a squeezed sidebar
-- [x] Full-window hidden text input target for more reliable terminal typing focus
-- [x] Modified terminal key sequences for Ctrl/Alt/Shift navigation and word-editing chords
-- [x] Regression coverage for legacy settings defaulting to compact rail and modified terminal keys
-- [x] Reduce command palette/action chrome to a serious terminal command surface
-- [ ] Audit common terminal editing chords against native shells and TUIs
-- [ ] Add stronger terminal interaction coverage for printable typing, paste, and shortcuts
+- [x] Flatten app chrome so the terminal owns the window
+- [x] Move primary action icons into the vertical rail
+- [x] Regenerate the Windows `.ico` from the black-background logo
+- [x] Hide settings/preference commands from the empty command palette
+- [x] Keep shell input focused through the full-window text target
 
 ## Next
 
-- [x] Add click/drag mouse reporting for full-screen TUI apps
-- [x] Extend resize handles beyond two-pane layouts
-- [x] Add agent pane presets with arguments and working-directory prompts
-- [x] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
-- [x] Add installer/release workflow after the app can launch and render reliably
-- [x] Add dependency license policy enforcement beyond metadata visibility
-- [x] Add integration coverage for app/UI/API/git boundary crates
-- [x] Prove MSRV with Rust 1.95 in CI instead of stable-only
+- [ ] Audit common terminal editing chords against native shells and TUIs
+- [ ] Add stronger terminal interaction coverage for printable typing, paste, and shortcuts
+- [ ] Replace rail width presets with direct drag/resizable rail behavior
+- [ ] Add first-class theme/font settings without adding persistent dashboard chrome
+- [ ] Add packaged installers and signed release artifacts
+
+## Done Recently
+
+- [x] GPUI app shell with PTY-backed terminal sessions
+- [x] Vertical terminal tabs with persisted sessions
+- [x] Multiplexing with split, tile, resize, maximize, and close-other-pane commands
+- [x] CLI/API control through `lazytermctl`
+- [x] ANSI/cursor rendering through the Alacritty terminal parser
+- [x] Windows GUI subsystem and embedded app icon resource
+- [x] Cross-platform CI for Windows, macOS, and Linux

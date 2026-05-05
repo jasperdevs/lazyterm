@@ -35,35 +35,34 @@ use std::thread;
 use std::time::Duration;
 
 const BG: u32 = 0x050505;
-const SIDEBAR: u32 = 0x0d0d0d;
 const SURFACE: u32 = 0x101010;
 const SURFACE_ACTIVE: u32 = 0x181818;
 const ROW_ACTIVE: u32 = 0x242424;
 const BORDER: u32 = 0x202020;
-const BORDER_ACTIVE: u32 = 0x8f8f8f;
+const BORDER_ACTIVE: u32 = 0x3a3a3a;
 const TEXT: u32 = 0xf2f2f2;
 const TEXT_SOFT: u32 = 0xc9c9c9;
 const TEXT_MUTED: u32 = 0x858585;
 const TEXT_DIM: u32 = 0x5f5f5f;
 const TEXT_FAINT: u32 = 0x3f3f3f;
 
-const TITLEBAR_HEIGHT: f32 = 32.0;
-const STATUSLINE_HEIGHT: f32 = 24.0;
-const COMPACT_SIDEBAR_WIDTH: f32 = 76.0;
+const TITLEBAR_HEIGHT: f32 = 26.0;
+const STATUSLINE_HEIGHT: f32 = 18.0;
+const COMPACT_SIDEBAR_WIDTH: f32 = 60.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 212.0;
 const WIDE_SIDEBAR_WIDTH: f32 = 268.0;
-const COMMAND_PALETTE_WIDTH: f32 = 420.0;
+const COMMAND_PALETTE_WIDTH: f32 = 480.0;
 const COMMAND_PALETTE_MAX_HEIGHT: f32 = 560.0;
-const COMMAND_PALETTE_TOP: f32 = TITLEBAR_HEIGHT + 10.0;
+const COMMAND_PALETTE_TOP: f32 = 10.0;
 const DEFAULT_TERMINAL_PADDING: f32 = 16.0;
 const DEFAULT_SPLIT_RATIO: f32 = 0.5;
 const MIN_SPLIT_RATIO: f32 = 0.2;
 const MAX_SPLIT_RATIO: f32 = 0.8;
 const MIN_PANE_RATIO: f32 = 0.08;
-const RESIZE_HANDLE_SIZE: f32 = 6.0;
+const RESIZE_HANDLE_SIZE: f32 = 4.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
-const TAB_HEIGHT: f32 = 54.0;
+const TAB_HEIGHT: f32 = 42.0;
 const API_BIND_ADDR: &str = "127.0.0.1:47431";
 const API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1623,56 +1622,19 @@ impl LazytermApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
                     .font_family("JetBrains Mono")
                     .child(
                         div()
-                            .size(px(24.0))
-                            .rounded(px(4.0))
+                            .size(px(18.0))
+                            .rounded(px(3.0))
                             .overflow_hidden()
                             .child(img("logoblackbackground.svg").size_full()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(TEXT))
-                            .child("lazyterm"),
                     ),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .child(self.render_titlebar_button(
-                        IconKind::NewPane,
-                        "titlebar-new",
-                        cx,
-                        |this, _| {
-                            this.create_terminal();
-                        },
-                    ))
-                    .child(self.render_titlebar_button(
-                        IconKind::SplitLayout,
-                        "titlebar-layout",
-                        cx,
-                        |this, _| {
-                            if this.ui_settings.tile_sessions {
-                                this.toggle_tile_sessions();
-                            } else {
-                                this.split_workspace();
-                            }
-                        },
-                    ))
-                    .child(self.render_titlebar_button(
-                        IconKind::CommandPalette,
-                        "titlebar-command",
-                        cx,
-                        |this, _| {
-                            this.toggle_command_palette();
-                        },
-                    ))
                     .child(self.render_titlebar_button(
                         IconKind::Close,
                         "window-close",
@@ -1695,20 +1657,18 @@ impl LazytermApp {
             .flex()
             .items_center()
             .justify_center()
-            .w(px(28.0))
-            .h(px(24.0))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(rgb(BORDER))
+            .w(px(24.0))
+            .h(px(22.0))
+            .rounded(px(3.0))
             .bg(rgb(BG))
             .when(icon == IconKind::Close, |this| {
                 this.window_control_area(WindowControlArea::Close)
             })
-            .hover(|this| this.bg(rgb(ROW_ACTIVE)).border_color(rgb(TEXT_DIM)))
+            .hover(|this| this.bg(rgb(ROW_ACTIVE)))
             .child(
                 img(icon.asset_path())
-                    .w(px(14.0))
-                    .h(px(14.0))
+                    .w(px(12.0))
+                    .h(px(12.0))
                     .id(format!("{}-icon", icon.label())),
             )
             .id(id)
@@ -1720,7 +1680,7 @@ impl LazytermApp {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut tabs = div().flex().flex_col().gap_2();
+        let mut tabs = div().flex().flex_col().gap_1();
         for (index, session) in self.sessions.iter().enumerate() {
             tabs = tabs.child(self.render_session_tab(session, index, cx));
         }
@@ -1733,9 +1693,49 @@ impl LazytermApp {
             .h_full()
             .border_r_1()
             .border_color(rgb(BORDER))
-            .bg(rgb(SIDEBAR))
-            .px_1()
+            .bg(rgb(BG))
+            .px(px(if self.ui_settings.rail_width == RailWidth::Compact {
+                0.0
+            } else {
+                4.0
+            }))
             .py_1()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .pb_1()
+                    .child(self.render_titlebar_button(
+                        IconKind::NewPane,
+                        "rail-new",
+                        cx,
+                        |this, _| {
+                            this.create_terminal();
+                        },
+                    ))
+                    .child(self.render_titlebar_button(
+                        IconKind::SplitLayout,
+                        "rail-split",
+                        cx,
+                        |this, _| {
+                            if this.ui_settings.tile_sessions {
+                                this.toggle_tile_sessions();
+                            } else {
+                                this.split_workspace();
+                            }
+                        },
+                    ))
+                    .child(self.render_titlebar_button(
+                        IconKind::CommandPalette,
+                        "rail-command",
+                        cx,
+                        |this, _| {
+                            this.toggle_command_palette();
+                        },
+                    )),
+            )
             .child(
                 div()
                     .w_full()
@@ -1762,24 +1762,29 @@ impl LazytermApp {
             _ => TEXT_SOFT,
         };
         let attention = session_needs_attention(session);
-        let tab_background = if active { SURFACE_ACTIVE } else { SIDEBAR };
-        let show_metadata = self.show_rail_metadata();
+        let tab_background = if active { SURFACE_ACTIVE } else { BG };
+        let rail_branch = session.summary.workspace.git_branch.as_deref();
+        let show_metadata = self.show_rail_metadata() && rail_branch.is_some();
         let compact = self.ui_settings.rail_width == RailWidth::Compact;
 
         let mut tab_body = div()
             .flex()
             .items_center()
             .gap_2()
-            .pl_3()
-            .pr_2()
+            .pl(px(if compact { 0.0 } else { 12.0 }))
+            .pr(px(if compact { 0.0 } else { 8.0 }))
             .w_full()
             .child(
                 div()
-                    .w(px(if compact { 32.0 } else { 28.0 }))
+                    .w(px(if compact { 24.0 } else { 28.0 }))
                     .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
-                    .text_size(px(16.0))
+                    .text_size(px(if compact { 12.0 } else { 15.0 }))
                     .font_weight(FontWeight::BOLD)
-                    .child(format!("{:02}", index + 1)),
+                    .child(if compact {
+                        format!("{}", index + 1)
+                    } else {
+                        format!("{:02}", index + 1)
+                    }),
             );
 
         if compact {
@@ -1809,9 +1814,7 @@ impl LazytermApp {
                                 .gap_1()
                                 .text_color(rgb(if active { TEXT_MUTED } else { TEXT_DIM }))
                                 .text_size(px(10.0))
-                                .child(SharedString::from(status_label(session.summary.status)))
-                                .child(SharedString::from(" / "))
-                                .child(SharedString::from(session.summary.agent.label())),
+                                .child(SharedString::from(rail_branch.unwrap_or(""))),
                         )
                     }),
             );
@@ -1823,32 +1826,29 @@ impl LazytermApp {
             .relative()
             .w_full()
             .h(px(TAB_HEIGHT))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(rgb(if active || attention {
-                BORDER_ACTIVE
-            } else {
-                BORDER
-            }))
+            .rounded(px(if compact { 0.0 } else { 3.0 }))
+            .border_l_1()
+            .border_color(rgb(if active { TEXT } else { BG }))
             .bg(rgb(tab_background))
             .hover(|this| this.bg(rgb(SURFACE)).border_color(rgb(TEXT_DIM)))
             .font_family("JetBrains Mono")
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.0))
-                    .top(px(7.0))
-                    .bottom(px(7.0))
-                    .w(px(2.0))
-                    .rounded_full()
-                    .bg(rgb(if active { TEXT } else { status_color })),
-            )
+            .when(!active, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(10.0))
+                        .bottom(px(10.0))
+                        .w(px(1.0))
+                        .bg(rgb(status_color)),
+                )
+            })
             .when(attention, |this| {
                 this.child(
                     div()
                         .absolute()
-                        .right(px(6.0))
-                        .top(px(5.0))
+                        .right(px(if compact { 9.0 } else { 7.0 }))
+                        .top(px(6.0))
                         .text_color(rgb(TEXT))
                         .text_size(px(10.0))
                         .child("!"),
@@ -1982,9 +1982,6 @@ impl LazytermApp {
             .flex()
             .flex_col()
             .min_h(px(180.0))
-            .border_r_1()
-            .border_b_1()
-            .border_color(rgb(BORDER))
             .overflow_hidden()
             .child(self.render_terminal(index, index == self.active_session, cx))
             .id(format!("terminal-tile-{index}"))
@@ -2232,7 +2229,10 @@ impl LazytermApp {
         let context = session_context_label(session);
         let status = status_label(session.summary.status);
         let detail = if notification.is_empty() {
-            status.to_string()
+            match session.summary.status {
+                SessionStatus::Running | SessionStatus::Done => String::new(),
+                _ => status.to_string(),
+            }
         } else {
             notification.to_string()
         };
@@ -2242,28 +2242,34 @@ impl LazytermApp {
             .justify_between()
             .h(px(STATUSLINE_HEIGHT))
             .border_t_1()
-            .border_color(rgb(if focused { BORDER_ACTIVE } else { BORDER }))
+            .border_color(rgb(if focused { BORDER } else { BG }))
             .bg(rgb(BG))
-            .px_3()
+            .px_2()
             .font_family("JetBrains Mono")
-            .text_size(px(11.0))
+            .text_size(px(10.0))
             .id("terminal-statusline")
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .text_color(rgb(if focused { TEXT } else { TEXT_DIM }))
+                    .gap_1()
+                    .text_color(rgb(if focused { TEXT_MUTED } else { TEXT_FAINT }))
                     .child(SharedString::from(context)),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_color(rgb(TEXT_DIM))
-                    .child(SharedString::from(detail)),
-            )
+            .when(!detail.is_empty(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_color(rgb(if session_needs_attention(session) {
+                            TEXT_SOFT
+                        } else {
+                            TEXT_DIM
+                        }))
+                        .child(SharedString::from(detail.clone())),
+                )
+            })
     }
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2279,16 +2285,7 @@ impl LazytermApp {
         }
 
         if !has_commands {
-            commands = commands.child(
-                div()
-                    .min_h(px(34.0))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .text_color(rgb(TEXT_DIM))
-                    .text_size(px(12.0))
-                    .child("no matches"),
-            );
+            commands = commands.child(div().min_h(px(10.0)));
         }
 
         div()
@@ -2296,9 +2293,9 @@ impl LazytermApp {
             .flex_col()
             .w(px(COMMAND_PALETTE_WIDTH))
             .max_h(px(COMMAND_PALETTE_MAX_HEIGHT))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(rgb(BORDER_ACTIVE))
+            .rounded(px(4.0))
+            .border_l_1()
+            .border_color(rgb(BORDER))
             .bg(rgb(BG))
             .font_family("JetBrains Mono")
             .overflow_hidden()
@@ -3553,8 +3550,8 @@ fn command_detail(command: &CommandItem) -> String {
     }
 
     match command.meta.as_str() {
-        "ready" => "installed".into(),
         "missing" => "missing".into(),
+        "ready" => String::new(),
         _ => command.meta.clone(),
     }
 }
@@ -4278,6 +4275,28 @@ mod tests {
             "",
             "",
         )));
+    }
+
+    #[test]
+    fn command_detail_hides_success_filler() {
+        assert_eq!(
+            command_detail(&CommandItem::new(
+                CommandKind::NewCodex,
+                "new codex",
+                "",
+                "ready"
+            )),
+            ""
+        );
+        assert_eq!(
+            command_detail(&CommandItem::new(
+                CommandKind::NewClaude,
+                "new claude",
+                "",
+                "missing"
+            )),
+            "missing"
+        );
     }
 
     #[test]
@@ -5022,7 +5041,7 @@ mod tests {
         );
 
         assert!(size.columns >= 20);
-        assert_eq!(size.rows, 8);
+        assert_eq!(size.rows, 9);
     }
 
     #[test]
