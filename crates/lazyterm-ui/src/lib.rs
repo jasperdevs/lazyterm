@@ -1,6 +1,7 @@
 use gpui::{
-    div, img, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    ParentElement, Pixels, Render, SharedString, Size, StatefulInteractiveElement, Styled, Window,
+    div, img, prelude::*, px, rgb, App, ClipboardItem, Context, FocusHandle, Focusable,
+    IntoElement, KeyDownEvent, ParentElement, Pixels, Render, SharedString, Size,
+    StatefulInteractiveElement, Styled, Window,
 };
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
@@ -46,6 +47,7 @@ pub struct LazytermApp {
 struct UiSettings {
     compact_tabs: bool,
     show_session_meta: bool,
+    tile_sessions: bool,
     terminal_font_size: f32,
 }
 
@@ -98,6 +100,7 @@ impl LazytermApp {
             ui_settings: UiSettings {
                 compact_tabs: false,
                 show_session_meta: true,
+                tile_sessions: false,
                 terminal_font_size: 12.0,
             },
         }
@@ -167,17 +170,89 @@ impl LazytermApp {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let handled = self.write_key_to_active_pty(event);
+        let handled = self.handle_app_key(event, cx) || self.write_key_to_active_pty(event);
         if handled {
             cx.stop_propagation();
             cx.notify();
         }
     }
 
+    fn handle_app_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        let primary = modifiers.platform || (modifiers.control && modifiers.shift);
+
+        if self.settings_open && key == "escape" {
+            self.settings_open = false;
+            return true;
+        }
+
+        if primary {
+            match key {
+                "t" => {
+                    self.create_terminal();
+                    return true;
+                }
+                "w" => {
+                    self.close_active_terminal();
+                    return true;
+                }
+                "r" => {
+                    self.restart_active_terminal();
+                    return true;
+                }
+                "v" => {
+                    self.paste_clipboard(cx);
+                    return true;
+                }
+                "c" => {
+                    self.copy_active_transcript(cx);
+                    return true;
+                }
+                "," => {
+                    self.toggle_settings();
+                    return true;
+                }
+                "b" => {
+                    self.toggle_tile_sessions();
+                    return true;
+                }
+                "+" | "=" => {
+                    self.adjust_font_size(1.0);
+                    return true;
+                }
+                "-" => {
+                    self.adjust_font_size(-1.0);
+                    return true;
+                }
+                _ => {}
+            }
+
+            if let Some(index) = tab_index_for_key(key) {
+                self.activate_session(index);
+                return true;
+            }
+        }
+
+        if modifiers.control && key == "tab" {
+            if modifiers.shift {
+                self.activate_previous_session();
+            } else {
+                self.activate_next_session();
+            }
+            return true;
+        }
+
+        false
+    }
+
     fn write_key_to_active_pty(&mut self, event: &KeyDownEvent) -> bool {
         let bytes = match event.keystroke.key.as_str() {
             "enter" => Some(b"\r".as_slice()),
             "backspace" => Some(b"\x7f".as_slice()),
+            "escape" => Some(b"\x1b".as_slice()),
+            "tab" if event.keystroke.modifiers.shift => Some(b"\x1b[Z".as_slice()),
+            "tab" => Some(b"\t".as_slice()),
             "delete" => Some(b"\x1b[3~".as_slice()),
             "left" => Some(b"\x1b[D".as_slice()),
             "right" => Some(b"\x1b[C".as_slice()),
@@ -185,9 +260,21 @@ impl LazytermApp {
             "down" => Some(b"\x1b[B".as_slice()),
             "home" => Some(b"\x1b[H".as_slice()),
             "end" => Some(b"\x1b[F".as_slice()),
-            "c" if event.keystroke.modifiers.control => Some(b"\x03".as_slice()),
-            "d" if event.keystroke.modifiers.control => Some(b"\x04".as_slice()),
-            "l" if event.keystroke.modifiers.control => Some(b"\x0c".as_slice()),
+            "pageup" => Some(b"\x1b[5~".as_slice()),
+            "pagedown" => Some(b"\x1b[6~".as_slice()),
+            "insert" => Some(b"\x1b[2~".as_slice()),
+            "f1" => Some(b"\x1bOP".as_slice()),
+            "f2" => Some(b"\x1bOQ".as_slice()),
+            "f3" => Some(b"\x1bOR".as_slice()),
+            "f4" => Some(b"\x1bOS".as_slice()),
+            "f5" => Some(b"\x1b[15~".as_slice()),
+            "f6" => Some(b"\x1b[17~".as_slice()),
+            "f7" => Some(b"\x1b[18~".as_slice()),
+            "f8" => Some(b"\x1b[19~".as_slice()),
+            "f9" => Some(b"\x1b[20~".as_slice()),
+            "f10" => Some(b"\x1b[21~".as_slice()),
+            "f11" => Some(b"\x1b[23~".as_slice()),
+            "f12" => Some(b"\x1b[24~".as_slice()),
             _ => None,
         };
 
@@ -197,7 +284,15 @@ impl LazytermApp {
         }
 
         let modifiers = event.keystroke.modifiers;
-        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+        if modifiers.platform || modifiers.function {
+            return false;
+        }
+
+        if modifiers.control {
+            if let Some(byte) = control_byte_for_key(event.keystroke.key.as_str()) {
+                self.write_bytes_to_active_pty(&[byte]);
+                return true;
+            }
             return false;
         }
 
@@ -205,6 +300,9 @@ impl LazytermApp {
             return false;
         };
 
+        if modifiers.alt {
+            self.write_bytes_to_active_pty(b"\x1b");
+        }
         self.write_bytes_to_active_pty(input.as_bytes());
         true
     }
@@ -236,6 +334,82 @@ impl LazytermApp {
         self.active_session = self.sessions.len() - 1;
     }
 
+    fn close_active_terminal(&mut self) {
+        if self.sessions.len() == 1 {
+            self.restart_active_terminal();
+            return;
+        }
+
+        self.sessions.remove(self.active_session);
+        if self.active_session >= self.sessions.len() {
+            self.active_session = self.sessions.len() - 1;
+        }
+    }
+
+    fn restart_active_terminal(&mut self) {
+        let index = self.active_session + 1;
+        let title = self.sessions[self.active_session].summary.title.clone();
+        self.sessions[self.active_session] =
+            TerminalSession::spawn(index, self.cwd.clone(), self.branch.clone(), title);
+    }
+
+    fn activate_session(&mut self, index: usize) {
+        if index < self.sessions.len() {
+            self.active_session = index;
+        }
+    }
+
+    fn activate_next_session(&mut self) {
+        if !self.sessions.is_empty() {
+            self.active_session = (self.active_session + 1) % self.sessions.len();
+        }
+    }
+
+    fn activate_previous_session(&mut self) {
+        if self.sessions.is_empty() {
+            return;
+        }
+
+        self.active_session = if self.active_session == 0 {
+            self.sessions.len() - 1
+        } else {
+            self.active_session - 1
+        };
+    }
+
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+
+        self.write_bytes_to_active_pty(text.as_bytes());
+    }
+
+    fn copy_active_transcript(&self, cx: &mut Context<Self>) {
+        let session = self.active_session();
+        let mut transcript = String::new();
+        for line in &session.lines {
+            transcript.push_str(&line.text);
+            transcript.push('\n');
+        }
+        if !session.pending_line.is_empty() {
+            transcript.push_str(&session.pending_line);
+        }
+
+        if !transcript.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(transcript));
+        }
+    }
+
+    fn adjust_font_size(&mut self, delta: f32) {
+        self.ui_settings.terminal_font_size =
+            (self.ui_settings.terminal_font_size + delta).clamp(10.0, 16.0);
+    }
+
+    fn toggle_tile_sessions(&mut self) {
+        self.ui_settings.tile_sessions = !self.ui_settings.tile_sessions;
+    }
+
     fn focus_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }
@@ -250,15 +424,6 @@ impl LazytermApp {
             .and_then(|name| name.to_str())
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| self.cwd.display().to_string())
-    }
-
-    fn active_context_label(&self) -> String {
-        let session = self.active_session();
-        let branch = session.summary.workspace.git_branch.as_deref();
-        match branch {
-            Some(branch) => format!("{}  /  {branch}", session.summary.title),
-            None => session.summary.title.clone(),
-        }
     }
 
     fn toggle_settings(&mut self) {
@@ -301,7 +466,7 @@ impl LazytermApp {
                     .items_center()
                     .gap_1()
                     .child(self.render_titlebar_button(
-                        "⚙",
+                        "set",
                         "titlebar-settings",
                         cx,
                         |this, _| {
@@ -309,7 +474,7 @@ impl LazytermApp {
                         },
                     ))
                     .child(
-                        self.render_titlebar_button("×", "window-close", cx, |_, window| {
+                        self.render_titlebar_button("x", "window-close", cx, |_, window| {
                             window.remove_window();
                         }),
                     ),
@@ -366,7 +531,7 @@ impl LazytermApp {
             .border_color(rgb(BORDER))
             .bg(rgb(SIDEBAR))
             .when(!self.ui_settings.compact_tabs, |this| {
-                this.child(self.render_sidebar_header(cx))
+                this.child(self.render_sidebar_header())
             })
             .when(self.ui_settings.compact_tabs, |this| {
                 this.items_center().px_2().py_2().child(
@@ -381,8 +546,8 @@ impl LazytermApp {
                         .bg(rgb(BG))
                         .text_color(rgb(TEXT_SOFT))
                         .font_family("JetBrains Mono")
-                        .text_size(px(16.0))
-                        .child("+")
+                        .text_size(px(11.0))
+                        .child("new")
                         .id("new-terminal")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.create_terminal();
@@ -401,13 +566,16 @@ impl LazytermApp {
                     .overflow_y_scroll()
                     .child(tabs.w_full()),
             )
+            .when(!self.ui_settings.compact_tabs, |this| {
+                this.child(self.render_session_actions(cx))
+            })
     }
 
-    fn render_sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar_header(&self) -> impl IntoElement {
         div()
             .flex()
             .items_center()
-            .justify_between()
+            .justify_start()
             .h(px(54.0))
             .px_3()
             .border_b_1()
@@ -436,27 +604,64 @@ impl LazytermApp {
                             ))),
                     ),
             )
+    }
+
+    fn render_session_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .pb_2()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(30.0))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(BG))
-                    .text_color(rgb(TEXT_SOFT))
-                    .font_family("JetBrains Mono")
-                    .text_size(px(16.0))
-                    .child("+")
-                    .id("sidebar-new-terminal")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.create_terminal();
-                        this.focus_terminal(window, cx);
-                        cx.notify();
-                    })),
+                self.render_sidebar_action("new", "sidebar-action-new", cx, |this| {
+                    this.create_terminal();
+                }),
             )
+            .child(
+                self.render_sidebar_action("restart", "sidebar-action-restart", cx, |this| {
+                    this.restart_active_terminal();
+                }),
+            )
+            .child(
+                self.render_sidebar_action("close", "sidebar-action-close", cx, |this| {
+                    this.close_active_terminal();
+                }),
+            )
+            .child(
+                self.render_sidebar_action("tile", "sidebar-action-tile", cx, |this| {
+                    this.toggle_tile_sessions();
+                }),
+            )
+    }
+
+    fn render_sidebar_action(
+        &self,
+        label: &'static str,
+        id: &'static str,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .h(px(28.0))
+            .px_2()
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE))
+            .text_color(rgb(TEXT_MUTED))
+            .font_family("JetBrains Mono")
+            .text_size(px(11.0))
+            .child(label)
+            .id(id)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                action(this);
+                this.focus_terminal(window, cx);
+                cx.notify();
+            }))
     }
 
     fn render_session_tab(
@@ -559,8 +764,66 @@ impl LazytermApp {
             }))
     }
 
-    fn render_terminal(&self, focused: bool) -> impl IntoElement {
-        let session = &self.sessions[self.active_session];
+    fn render_terminal_workspace(&self, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_1()
+            .h_full()
+            .when(self.ui_settings.tile_sessions, |this| {
+                this.child(self.render_tiled_terminals(cx))
+            })
+            .when(!self.ui_settings.tile_sessions, |this| {
+                this.child(self.render_terminal(self.active_session, focused, cx))
+            })
+    }
+
+    fn render_tiled_terminals(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let columns = if self.sessions.len() <= 1 { 1 } else { 2 };
+        let mut tiles = div()
+            .grid()
+            .grid_cols(columns)
+            .gap_2()
+            .p_2()
+            .flex_1()
+            .h_full()
+            .bg(rgb(BG));
+
+        for index in 0..self.sessions.len() {
+            tiles = tiles.child(self.render_terminal_tile(index, cx));
+        }
+
+        tiles
+    }
+
+    fn render_terminal_tile(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .min_h(px(180.0))
+            .border_1()
+            .border_color(rgb(if index == self.active_session {
+                BORDER_ACTIVE
+            } else {
+                BORDER
+            }))
+            .rounded_lg()
+            .overflow_hidden()
+            .child(self.render_terminal(index, index == self.active_session, cx))
+            .id(format!("terminal-tile-{index}"))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.active_session = index;
+                this.focus_terminal(window, cx);
+                cx.notify();
+            }))
+    }
+
+    fn render_terminal(
+        &self,
+        session_index: usize,
+        focused: bool,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let session = &self.sessions[session_index];
         let mut transcript = div().flex().flex_col().gap_1();
 
         for line in &session.lines {
@@ -578,7 +841,7 @@ impl LazytermApp {
             .flex_1()
             .h_full()
             .bg(rgb(BG))
-            .child(self.render_workspace_bar())
+            .child(self.render_workspace_bar(session_index))
             .child(
                 div()
                     .flex_1()
@@ -596,7 +859,8 @@ impl LazytermApp {
             .child(self.render_statusline(focused))
     }
 
-    fn render_workspace_bar(&self) -> impl IntoElement {
+    fn render_workspace_bar(&self, session_index: usize) -> impl IntoElement {
+        let session = &self.sessions[session_index];
         div()
             .flex()
             .items_center()
@@ -625,7 +889,7 @@ impl LazytermApp {
                         div()
                             .text_color(rgb(TEXT_SOFT))
                             .text_size(px(12.0))
-                            .child(SharedString::from(self.active_context_label())),
+                            .child(SharedString::from(session_context_label(session))),
                     ),
             )
     }
@@ -640,8 +904,10 @@ impl LazytermApp {
             .flex()
             .items_start()
             .font_family("JetBrains Mono")
-            .text_size(px(12.0))
-            .line_height(px(TERMINAL_LINE_HEIGHT))
+            .text_size(px(self.ui_settings.terminal_font_size))
+            .line_height(px(terminal_line_height(
+                self.ui_settings.terminal_font_size,
+            )))
             .child(
                 div()
                     .flex_1()
@@ -716,7 +982,7 @@ impl LazytermApp {
                             .bg(rgb(BG))
                             .text_color(rgb(TEXT_MUTED))
                             .text_size(px(12.0))
-                            .child("×")
+                            .child("x")
                             .id("settings-close")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.settings_open = false;
@@ -748,6 +1014,15 @@ impl LazytermApp {
                         |this| {
                             this.ui_settings.show_session_meta =
                                 !this.ui_settings.show_session_meta;
+                        },
+                    ))
+                    .child(self.render_toggle_row(
+                        "Tile sessions",
+                        self.ui_settings.tile_sessions,
+                        "settings-tile-sessions",
+                        cx,
+                        |this| {
+                            this.ui_settings.tile_sessions = !this.ui_settings.tile_sessions;
                         },
                     ))
                     .child(self.render_font_size_row(cx)),
@@ -856,8 +1131,7 @@ impl LazytermApp {
             .child(label)
             .id(id)
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.ui_settings.terminal_font_size =
-                    (this.ui_settings.terminal_font_size + delta).clamp(10.0, 16.0);
+                this.adjust_font_size(delta);
                 this.focus_terminal(window, cx);
                 cx.notify();
             }))
@@ -1021,7 +1295,7 @@ impl Render for LazytermApp {
                     .relative()
                     .overflow_hidden()
                     .child(self.render_sidebar(cx))
-                    .child(self.render_terminal(self.focus_handle.is_focused(window)))
+                    .child(self.render_terminal_workspace(self.focus_handle.is_focused(window), cx))
                     .when(self.settings_open, |this| {
                         this.child(
                             div()
@@ -1071,6 +1345,35 @@ fn terminal_char_width(font_size: f32) -> f32 {
 
 fn terminal_line_height(font_size: f32) -> f32 {
     TERMINAL_LINE_HEIGHT * (font_size / 12.0)
+}
+
+fn control_byte_for_key(key: &str) -> Option<u8> {
+    let byte = key.as_bytes().first().copied()?.to_ascii_lowercase();
+    match byte {
+        b'a'..=b'z' => Some(byte - b'a' + 1),
+        b'[' => Some(0x1b),
+        b'\\' => Some(0x1c),
+        b']' => Some(0x1d),
+        b'^' => Some(0x1e),
+        b'_' => Some(0x1f),
+        _ => None,
+    }
+}
+
+fn tab_index_for_key(key: &str) -> Option<usize> {
+    let value = key.parse::<usize>().ok()?;
+    if (1..=9).contains(&value) {
+        Some(value - 1)
+    } else {
+        None
+    }
+}
+
+fn session_context_label(session: &TerminalSession) -> String {
+    match session.summary.workspace.git_branch.as_deref() {
+        Some(branch) => format!("{}  /  {branch}", session.summary.title),
+        None => session.summary.title.clone(),
+    }
 }
 
 fn normalize_pty_output(output: &str) -> String {
@@ -1136,6 +1439,23 @@ mod tests {
     #[test]
     fn applies_backspace_to_pending_text() {
         assert_eq!(normalize_pty_output("ab\u{8}c"), "ac");
+    }
+
+    #[test]
+    fn maps_common_control_keys_to_terminal_bytes() {
+        assert_eq!(control_byte_for_key("a"), Some(0x01));
+        assert_eq!(control_byte_for_key("c"), Some(0x03));
+        assert_eq!(control_byte_for_key("l"), Some(0x0c));
+        assert_eq!(control_byte_for_key("z"), Some(0x1a));
+        assert_eq!(control_byte_for_key("1"), None);
+    }
+
+    #[test]
+    fn maps_number_shortcuts_to_session_indexes() {
+        assert_eq!(tab_index_for_key("1"), Some(0));
+        assert_eq!(tab_index_for_key("9"), Some(8));
+        assert_eq!(tab_index_for_key("0"), None);
+        assert_eq!(tab_index_for_key("t"), None);
     }
 
     #[test]

@@ -20,13 +20,18 @@
 - [x] Ignored external reference clones for cmux/mux, claude-squad, and seance
 - [x] cmux-style workspace sidebar with active shell rows and status metadata
 - [x] In-app settings panel for tab density, metadata, and terminal font size
+- [x] ASCII-only window chrome without emoji/symbol buttons
+- [x] Session controls for new, restart, close, and keyboard tab cycling
+- [x] Terminal key passthrough for paste, function keys, alt chords, and generic control chords
+- [x] Tiled multiplexer view for watching multiple shells at once
 
 ## Next
 
 - [ ] Add app socket transport for the CLI/API
 - [ ] Replace demo sessions with persisted session state
-- [ ] Add real split-pane data model and UI interactions
+- [ ] Add real split-pane resize handles and per-pane PTY sizing
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
+- [ ] Replace transcript text rendering with a real alacritty_terminal grid renderer
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates
