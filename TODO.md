@@ -44,6 +44,7 @@
 - [x] Mux pane commands for maximize pane and close other panes
 - [x] Directional pane navigation with Ctrl+Alt+Arrow and command palette actions
 - [x] Persisted terminal density controls for compact/default/roomy layouts
+- [x] CLI/API pane controls for close-others and focus-attention
 
 ## Next
 

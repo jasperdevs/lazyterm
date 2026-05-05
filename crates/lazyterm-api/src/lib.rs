@@ -14,6 +14,8 @@ pub enum ApiRequest {
     FocusSession {
         id: String,
     },
+    CloseOtherSessions,
+    FocusAttention,
     Status,
 }
 

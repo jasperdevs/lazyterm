@@ -46,6 +46,8 @@ enum HelpTopic {
     New,
     Run,
     Focus,
+    CloseOthers,
+    Attention,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -86,6 +88,12 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             "new" => parse_session_command(args, AgentKind::Shell, HelpTopic::New),
             "run" => parse_session_command(args, AgentKind::Codex, HelpTopic::Run),
             "focus" => parse_focus_command(args),
+            "close-others" => {
+                parse_no_arg_command(args, HelpTopic::CloseOthers, ApiRequest::CloseOtherSessions)
+            }
+            "attention" => {
+                parse_no_arg_command(args, HelpTopic::Attention, ApiRequest::FocusAttention)
+            }
             _ => Err(CliError::new(
                 format!("unknown command '{command}'"),
                 HelpTopic::General,
@@ -112,6 +120,8 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "new" => Ok(ParsedCli::Help(HelpTopic::New)),
                 "run" => Ok(ParsedCli::Help(HelpTopic::Run)),
                 "focus" => Ok(ParsedCli::Help(HelpTopic::Focus)),
+                "close-others" => Ok(ParsedCli::Help(HelpTopic::CloseOthers)),
+                "attention" => Ok(ParsedCli::Help(HelpTopic::Attention)),
                 "help" => Ok(ParsedCli::Help(HelpTopic::General)),
                 _ => Err(CliError::new(
                     format!("unknown help topic '{topic}'"),
@@ -255,6 +265,8 @@ COMMANDS:
     new                create a shell session
     run                create a codex session
     focus <id>         focus a session
+    attention          focus the next pane that needs attention
+    close-others       close every pane except the active one
     help [command]     show help for a command
 
 OPTIONS:
@@ -268,6 +280,7 @@ EXAMPLES:
     lazyterm run --cwd . --task \"fix the parser\"
     lazyterm new --agent shell --task \"inspect the repo\"
     lazyterm focus session-123
+    lazyterm close-others
 ",
         ),
         HelpTopic::List => "\
@@ -312,6 +325,18 @@ OPTIONS:
 lazyterm focus <id>
 
 Focus a session in the running app.
+"
+        .to_string(),
+        HelpTopic::CloseOthers => "\
+lazyterm close-others
+
+Close every pane except the active pane.
+"
+        .to_string(),
+        HelpTopic::Attention => "\
+lazyterm attention
+
+Focus the next pane that needs input or failed.
 "
         .to_string(),
     }
@@ -425,6 +450,18 @@ mod tests {
             ParsedCli::Request(ApiRequest::FocusSession {
                 id: "session-123".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn parses_pane_control_commands() {
+        assert_eq!(
+            parse(&["close-others"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::CloseOtherSessions)
+        );
+        assert_eq!(
+            parse(&["attention"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::FocusAttention)
         );
     }
 

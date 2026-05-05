@@ -378,6 +378,14 @@ impl LazytermApp {
                 self.active_session = index;
                 ApiResponse::Ack
             }
+            ApiRequest::CloseOtherSessions => {
+                self.close_other_terminals();
+                ApiResponse::Ack
+            }
+            ApiRequest::FocusAttention => {
+                self.focus_next_attention_session();
+                ApiResponse::Ack
+            }
         }
     }
 
