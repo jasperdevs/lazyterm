@@ -126,6 +126,13 @@ struct TerminalMouseInput {
     action: MouseReportAction,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AgentLaunchQuery {
+    agent: AgentKind,
+    cwd: PathBuf,
+    task: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SplitOrientation {
     Columns,
@@ -645,7 +652,11 @@ impl LazytermApp {
                     return true;
                 }
                 "enter" => {
-                    if let Some(command) = self.selected_command() {
+                    if self.run_palette_launch_query() {
+                        self.command_palette_open = false;
+                        self.command_palette_query.clear();
+                        self.command_palette_selection = 0;
+                    } else if let Some(command) = self.selected_command() {
                         self.run_command(command.kind, cx);
                         self.command_palette_open = false;
                         self.command_palette_query.clear();
@@ -1020,18 +1031,7 @@ impl LazytermApp {
     }
 
     fn create_agent_terminal(&mut self, agent: AgentKind) {
-        let index = self.sessions.len() + 1;
-        let title = format!("{} {index}", agent.label().to_ascii_lowercase());
-        self.sessions.push(TerminalSession::spawn(
-            index,
-            self.cwd.clone(),
-            self.branch.clone(),
-            title,
-            agent,
-            None,
-        ));
-        self.active_session = self.sessions.len() - 1;
-        self.persist_state();
+        self.create_terminal_for(agent, self.cwd.clone(), None);
     }
 
     fn create_terminal_for(&mut self, agent: AgentKind, cwd: PathBuf, task: Option<String>) {
@@ -1042,8 +1042,8 @@ impl LazytermApp {
         };
         self.sessions.push(TerminalSession::spawn(
             index,
-            cwd,
-            current_branch(),
+            cwd.clone(),
+            current_branch_for(&cwd),
             title,
             agent,
             task.map(startup_input_bytes),
@@ -1051,6 +1051,15 @@ impl LazytermApp {
         self.active_session = self.sessions.len() - 1;
 
         self.persist_state();
+    }
+
+    fn run_palette_launch_query(&mut self) -> bool {
+        let Some(launch) = parse_agent_launch_query(&self.command_palette_query, &self.cwd) else {
+            return false;
+        };
+
+        self.create_terminal_for(launch.agent, launch.cwd, launch.task);
+        true
     }
 
     fn close_active_terminal(&mut self) {
@@ -3666,6 +3675,57 @@ fn executable_suffixes(program: &str) -> Vec<String> {
     }
 }
 
+fn parse_agent_launch_query(query: &str, default_cwd: &Path) -> Option<AgentLaunchQuery> {
+    let mut parts = query.split_whitespace();
+    let agent = agent_kind_from_palette_token(parts.next()?)?;
+    let mut cwd = default_cwd.to_path_buf();
+    let mut task = Vec::new();
+
+    while let Some(part) = parts.next() {
+        match part {
+            "--cwd" | "-C" => {
+                cwd = resolve_palette_cwd(default_cwd, parts.next()?);
+            }
+            "--task" | "-t" | "--" => {
+                task.extend(parts.map(str::to_string));
+                break;
+            }
+            _ if part.starts_with('@') && part.len() > 1 => {
+                cwd = resolve_palette_cwd(default_cwd, &part[1..]);
+            }
+            _ => task.push(part.to_string()),
+        }
+    }
+
+    Some(AgentLaunchQuery {
+        agent,
+        cwd,
+        task: (!task.is_empty()).then(|| task.join(" ")),
+    })
+}
+
+fn agent_kind_from_palette_token(token: &str) -> Option<AgentKind> {
+    match token.trim_end_matches(':').to_ascii_lowercase().as_str() {
+        "shell" | "sh" => Some(AgentKind::Shell),
+        "codex" | "cx" => Some(AgentKind::Codex),
+        "claude" | "cc" => Some(AgentKind::Claude),
+        "opencode" | "open-code" | "open_code" | "oc" => Some(AgentKind::OpenCode),
+        "gemini" | "gm" => Some(AgentKind::Gemini),
+        "aider" | "ad" => Some(AgentKind::Aider),
+        _ => None,
+    }
+}
+
+fn resolve_palette_cwd(default_cwd: &Path, value: &str) -> PathBuf {
+    let value = value.trim_matches('"');
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        default_cwd.join(path)
+    }
+}
+
 fn startup_input_bytes(task: String) -> Vec<u8> {
     let mut input = task.into_bytes();
     input.push(b'\r');
@@ -3831,7 +3891,12 @@ fn normalize_pty_output(output: &str) -> String {
 }
 
 fn current_branch() -> Option<String> {
+    current_branch_for(Path::new("."))
+}
+
+fn current_branch_for(cwd: &Path) -> Option<String> {
     std::process::Command::new("git")
+        .current_dir(cwd)
         .args(["branch", "--show-current"])
         .output()
         .ok()
@@ -3948,6 +4013,43 @@ mod tests {
         };
 
         assert_eq!(command_label(&command), "pwsh.exe -NoLogo -NoProfile");
+    }
+
+    #[test]
+    fn palette_agent_launch_query_parses_task_text() {
+        let launch = parse_agent_launch_query("codex fix the parser", Path::new("C:/repo"))
+            .expect("agent launch query should parse");
+
+        assert_eq!(
+            launch,
+            AgentLaunchQuery {
+                agent: AgentKind::Codex,
+                cwd: PathBuf::from("C:/repo"),
+                task: Some("fix the parser".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn palette_agent_launch_query_parses_cwd_options() {
+        let launch =
+            parse_agent_launch_query("claude --cwd crates/ui review this", Path::new("C:/repo"))
+                .expect("agent launch query with cwd should parse");
+
+        assert_eq!(launch.agent, AgentKind::Claude);
+        assert_eq!(launch.cwd, PathBuf::from("C:/repo").join("crates/ui"));
+        assert_eq!(launch.task, Some("review this".into()));
+    }
+
+    #[test]
+    fn palette_agent_launch_query_parses_at_cwd_shorthand() {
+        let launch =
+            parse_agent_launch_query("opencode @crates/ui implement resize", Path::new("C:/repo"))
+                .expect("agent launch query with shorthand cwd should parse");
+
+        assert_eq!(launch.agent, AgentKind::OpenCode);
+        assert_eq!(launch.cwd, PathBuf::from("C:/repo").join("crates/ui"));
+        assert_eq!(launch.task, Some("implement resize".into()));
     }
 
     #[test]
