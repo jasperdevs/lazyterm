@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lazyterm-agents",
+    "crates/lazyterm-api",
+    "crates/lazyterm-app",
+    "crates/lazyterm-cli",
+    "crates/lazyterm-core",
+    "crates/lazyterm-git",
+    "crates/lazyterm-pty",
+    "crates/lazyterm-sessions",
+    "crates/lazyterm-terminal",
+    "crates/lazyterm-ui",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/jasperdevs/lazyterm"
+rust-version = "1.95"
+
+[workspace.dependencies]
+alacritty_terminal = "0.26.0"
+anyhow = "1.0.100"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "00a677e6cf3e1b045f2dd7db67f9e7b37ec7c7b0" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "00a677e6cf3e1b045f2dd7db67f9e7b37ec7c7b0" }
+portable-pty = "0.9.0"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"

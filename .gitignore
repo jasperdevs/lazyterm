@@ -1,0 +1,12 @@
+/target/
+/.omx/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor swap files
+*.swp
+*.swo
+*~
