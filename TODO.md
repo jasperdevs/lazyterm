@@ -12,10 +12,10 @@
 - [x] Audit common terminal editing chords against native terminal defaults
 - [x] Add stronger shortcut coverage for paste and window/control icons
 - [x] Add a direct draggable rail resize handle with persisted custom width
+- [x] Add first-class font settings without adding persistent dashboard chrome
 
 ## Next
 
-- [ ] Add first-class theme/font settings without adding persistent dashboard chrome
 - [ ] Add packaged installers and signed release artifacts
 
 ## Done Recently

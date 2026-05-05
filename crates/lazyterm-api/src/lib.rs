@@ -39,6 +39,10 @@ pub enum ApiRequest {
     SetDensity {
         density: TerminalDensity,
     },
+    SetFont {
+        family: Option<String>,
+        size: Option<u16>,
+    },
     SetRail {
         rail: TerminalRail,
     },

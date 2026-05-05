@@ -56,6 +56,7 @@ enum HelpTopic {
     Attention,
     Layout,
     Density,
+    Font,
     Rail,
     Agents,
 }
@@ -118,6 +119,7 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             }
             "layout" => parse_layout_command(args),
             "density" => parse_density_command(args),
+            "font" => parse_font_command(args),
             "rail" => parse_rail_command(args),
             "agents" => parse_no_arg_command(args, HelpTopic::Agents, ApiRequest::AgentHealth),
             _ => Err(CliError::new(
@@ -156,6 +158,7 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "attention" => Ok(ParsedCli::Help(HelpTopic::Attention)),
                 "layout" => Ok(ParsedCli::Help(HelpTopic::Layout)),
                 "density" => Ok(ParsedCli::Help(HelpTopic::Density)),
+                "font" => Ok(ParsedCli::Help(HelpTopic::Font)),
                 "rail" => Ok(ParsedCli::Help(HelpTopic::Rail)),
                 "agents" => Ok(ParsedCli::Help(HelpTopic::Agents)),
                 "help" => Ok(ParsedCli::Help(HelpTopic::General)),
@@ -425,6 +428,52 @@ fn parse_density_command(args: impl Iterator<Item = String>) -> Result<ParsedCli
     Ok(ParsedCli::Request(ApiRequest::SetDensity { density }))
 }
 
+fn parse_font_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
+    let mut family = None;
+    let mut size = None;
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCli::Help(HelpTopic::Font)),
+            "--family" | "-f" => {
+                family = Some(next_value(&mut args, "--family", HelpTopic::Font)?);
+            }
+            "--size" | "-s" => {
+                size = Some(parse_font_size(&next_value(
+                    &mut args,
+                    "--size",
+                    HelpTopic::Font,
+                )?)?);
+            }
+            _ if arg.starts_with('-') => {
+                return Err(CliError::new(
+                    format!("unknown option '{arg}'"),
+                    HelpTopic::Font,
+                ));
+            }
+            _ if size.is_none() => {
+                size = Some(parse_font_size(&arg)?);
+            }
+            _ => {
+                return Err(CliError::new(
+                    format!("unexpected argument '{arg}'"),
+                    HelpTopic::Font,
+                ));
+            }
+        }
+    }
+
+    if family.is_none() && size.is_none() {
+        return Err(CliError::new(
+            "font requires --family <name>, --size <points>, or a size",
+            HelpTopic::Font,
+        ));
+    }
+
+    Ok(ParsedCli::Request(ApiRequest::SetFont { family, size }))
+}
+
 fn parse_rail_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
     let mut rail = None;
 
@@ -499,6 +548,7 @@ COMMANDS:
     close-others       close every pane except the active one
     layout <mode>      set pane layout: grid, columns, rows
     density <mode>     set terminal density: compact, default, roomy
+    font               set terminal font family or size
     rail <mode>        set vertical tab rail: compact, default, wide
     help [command]     show help for a command
 
@@ -521,6 +571,7 @@ EXAMPLES:
     lazytermctl close-others
     lazytermctl layout columns
     lazytermctl density compact
+    lazytermctl font --family \"JetBrains Mono\" --size 12
     lazytermctl rail wide
 ",
         ),
@@ -628,6 +679,12 @@ lazytermctl density <compact|default|roomy>
 Set terminal font and padding density.
 "
         .to_string(),
+        HelpTopic::Font => "\
+lazytermctl font [--family <name>] [--size <points>]
+
+Set the terminal font without opening a settings screen.
+"
+        .to_string(),
         HelpTopic::Rail => "\
 lazytermctl rail <compact|default|wide>
 
@@ -713,6 +770,24 @@ fn parse_terminal_density(value: &str) -> Result<TerminalDensity, CliError> {
             format!("unknown density '{value}' (expected compact, default, or roomy)"),
             HelpTopic::Density,
         )),
+    }
+}
+
+fn parse_font_size(value: &str) -> Result<u16, CliError> {
+    let size = value.parse::<u16>().map_err(|_| {
+        CliError::new(
+            format!("font size '{value}' is not a whole number"),
+            HelpTopic::Font,
+        )
+    })?;
+
+    if (8..=24).contains(&size) {
+        Ok(size)
+    } else {
+        Err(CliError::new(
+            format!("font size '{value}' is outside 8-24"),
+            HelpTopic::Font,
+        ))
     }
 }
 
@@ -880,6 +955,20 @@ mod tests {
             parse(&["density", "compact"]).expect("parsed"),
             ParsedCli::Request(ApiRequest::SetDensity {
                 density: TerminalDensity::Compact,
+            })
+        );
+        assert_eq!(
+            parse(&["font", "--family", "JetBrains Mono", "--size", "13"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SetFont {
+                family: Some("JetBrains Mono".to_string()),
+                size: Some(13),
+            })
+        );
+        assert_eq!(
+            parse(&["font", "11"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SetFont {
+                family: None,
+                size: Some(11),
             })
         );
         assert_eq!(

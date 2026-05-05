@@ -65,6 +65,9 @@ const RESIZE_HANDLE_SIZE: f32 = 4.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
 const TAB_HEIGHT: f32 = 42.0;
+const MIN_TERMINAL_FONT_SIZE: f32 = 8.0;
+const MAX_TERMINAL_FONT_SIZE: f32 = 24.0;
+const DEFAULT_TERMINAL_FONT_FAMILY: &str = "JetBrains Mono";
 const API_BIND_ADDR: &str = "127.0.0.1:47431";
 const API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -93,6 +96,7 @@ struct UiSettings {
     tile_layout: TileLayout,
     rail_width: RailWidth,
     custom_rail_width: Option<f32>,
+    terminal_font_family: String,
     terminal_font_size: f32,
     terminal_padding: f32,
     split_ratio: f32,
@@ -198,7 +202,10 @@ impl From<PersistedUiSettings> for UiSettings {
             custom_rail_width: value
                 .custom_rail_width
                 .map(|width| width.clamp(MIN_CUSTOM_SIDEBAR_WIDTH, MAX_CUSTOM_SIDEBAR_WIDTH)),
-            terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
+            terminal_font_family: normalize_font_family(value.terminal_font_family),
+            terminal_font_size: value
+                .terminal_font_size
+                .clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE),
             terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
             split_ratio: value.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO),
             pane_ratios: value.pane_ratios,
@@ -213,6 +220,7 @@ impl From<UiSettings> for PersistedUiSettings {
             tile_layout: value.tile_layout,
             rail_width: value.rail_width,
             custom_rail_width: value.custom_rail_width,
+            terminal_font_family: value.terminal_font_family,
             terminal_font_size: value.terminal_font_size,
             terminal_padding: value.terminal_padding,
             split_ratio: value.split_ratio,
@@ -230,6 +238,8 @@ struct PersistedUiSettings {
     rail_width: RailWidth,
     #[serde(default)]
     custom_rail_width: Option<f32>,
+    #[serde(default = "default_terminal_font_family")]
+    terminal_font_family: String,
     terminal_font_size: f32,
     #[serde(default = "default_terminal_padding")]
     terminal_padding: f32,
@@ -476,6 +486,7 @@ impl LazytermApp {
             tile_layout: TileLayout::Grid,
             rail_width: RailWidth::Compact,
             custom_rail_width: None,
+            terminal_font_family: DEFAULT_TERMINAL_FONT_FAMILY.to_string(),
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
             split_ratio: DEFAULT_SPLIT_RATIO,
@@ -708,6 +719,10 @@ impl LazytermApp {
             }
             ApiRequest::SetDensity { density } => {
                 self.set_terminal_density(density);
+                ApiResponse::Ack
+            }
+            ApiRequest::SetFont { family, size } => {
+                self.set_terminal_font(family, size);
                 ApiResponse::Ack
             }
             ApiRequest::SetRail { rail } => {
@@ -1274,18 +1289,31 @@ impl LazytermApp {
     }
 
     fn adjust_font_size(&mut self, delta: f32) {
-        self.ui_settings.terminal_font_size =
-            (self.ui_settings.terminal_font_size + delta).clamp(10.0, 16.0);
+        self.ui_settings.terminal_font_size = (self.ui_settings.terminal_font_size + delta)
+            .clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE);
         self.persist_ui_settings();
     }
 
     fn set_font_size(&mut self, size: f32) {
-        self.ui_settings.terminal_font_size = size.clamp(10.0, 16.0);
+        self.ui_settings.terminal_font_size =
+            size.clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE);
+        self.persist_ui_settings();
+    }
+
+    fn set_terminal_font(&mut self, family: Option<String>, size: Option<u16>) {
+        if let Some(family) = family {
+            self.ui_settings.terminal_font_family = normalize_font_family(family);
+        }
+        if let Some(size) = size {
+            self.ui_settings.terminal_font_size =
+                (size as f32).clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE);
+        }
         self.persist_ui_settings();
     }
 
     fn set_density(&mut self, font_size: f32, padding: f32) {
-        self.ui_settings.terminal_font_size = font_size.clamp(10.0, 16.0);
+        self.ui_settings.terminal_font_size =
+            font_size.clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE);
         self.ui_settings.terminal_padding = padding.clamp(8.0, 24.0);
         self.persist_ui_settings();
     }
@@ -2163,7 +2191,7 @@ impl LazytermApp {
                     .flex_1()
                     .px(px(self.ui_settings.terminal_padding))
                     .py(px(self.ui_settings.terminal_padding))
-                    .font_family("JetBrains Mono")
+                    .font_family(self.ui_settings.terminal_font_family.clone())
                     .text_size(px(self.ui_settings.terminal_font_size))
                     .line_height(px(terminal_line_height(
                         self.ui_settings.terminal_font_size,
@@ -2330,7 +2358,7 @@ impl LazytermApp {
         let mut row_element = div()
             .flex()
             .items_start()
-            .font_family("JetBrains Mono")
+            .font_family(self.ui_settings.terminal_font_family.clone())
             .text_size(px(self.ui_settings.terminal_font_size))
             .line_height(px(terminal_line_height(
                 self.ui_settings.terminal_font_size,
@@ -2346,7 +2374,7 @@ impl LazytermApp {
 
     fn render_cell_run(&self, run: TerminalCellRun) -> impl IntoElement {
         let mut run_element = div()
-            .font_family("JetBrains Mono")
+            .font_family(self.ui_settings.terminal_font_family.clone())
             .text_size(px(self.ui_settings.terminal_font_size))
             .line_height(px(terminal_line_height(
                 self.ui_settings.terminal_font_size,
@@ -3363,6 +3391,26 @@ fn sidebar_width_for_rail(width: RailWidth) -> f32 {
 
 fn default_split_ratio() -> f32 {
     DEFAULT_SPLIT_RATIO
+}
+
+fn default_terminal_font_family() -> String {
+    DEFAULT_TERMINAL_FONT_FAMILY.to_string()
+}
+
+fn normalize_font_family(family: String) -> String {
+    let mut family = family
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string();
+    family.truncate(80);
+
+    if family.is_empty() {
+        default_terminal_font_family()
+    } else {
+        family
+    }
 }
 
 fn load_ui_settings(state_dir: &Path) -> Option<UiSettings> {
@@ -4631,6 +4679,7 @@ mod tests {
             tile_layout: TileLayout::Columns,
             rail_width: RailWidth::Wide,
             custom_rail_width: Some(144.0),
+            terminal_font_family: "Fira Code".into(),
             terminal_font_size: 15.0,
             terminal_padding: 22.0,
             split_ratio: 0.65,
@@ -4644,6 +4693,7 @@ mod tests {
         assert_eq!(loaded.tile_layout, settings.tile_layout);
         assert_eq!(loaded.rail_width, settings.rail_width);
         assert_eq!(loaded.custom_rail_width, settings.custom_rail_width);
+        assert_eq!(loaded.terminal_font_family, settings.terminal_font_family);
         assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
         assert_eq!(loaded.terminal_padding, settings.terminal_padding);
         assert_eq!(loaded.split_ratio, settings.split_ratio);
@@ -4672,6 +4722,7 @@ mod tests {
 
         assert_eq!(loaded.rail_width, RailWidth::Compact);
         assert_eq!(loaded.custom_rail_width, None);
+        assert_eq!(loaded.terminal_font_family, DEFAULT_TERMINAL_FONT_FAMILY);
         let _ = fs::remove_dir_all(state_dir);
     }
 
@@ -4682,6 +4733,7 @@ mod tests {
             tile_layout: TileLayout::Grid,
             rail_width: RailWidth::Wide,
             custom_rail_width: Some(MAX_CUSTOM_SIDEBAR_WIDTH + 50.0),
+            terminal_font_family: DEFAULT_TERMINAL_FONT_FAMILY.into(),
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
             split_ratio: DEFAULT_SPLIT_RATIO,
@@ -4695,6 +4747,29 @@ mod tests {
                 .custom_rail_width
                 .unwrap_or_else(|| sidebar_width_for_rail(loaded.rail_width)),
             MAX_CUSTOM_SIDEBAR_WIDTH
+        );
+    }
+
+    #[test]
+    fn terminal_font_settings_normalize_and_clamp() {
+        let settings = UiSettings {
+            tile_sessions: false,
+            tile_layout: TileLayout::Grid,
+            rail_width: RailWidth::Compact,
+            custom_rail_width: None,
+            terminal_font_family: "  Fira\u{0007} Code  ".into(),
+            terminal_font_size: MAX_TERMINAL_FONT_SIZE + 8.0,
+            terminal_padding: DEFAULT_TERMINAL_PADDING,
+            split_ratio: DEFAULT_SPLIT_RATIO,
+            pane_ratios: Vec::new(),
+        };
+        let loaded = UiSettings::from(PersistedUiSettings::from(settings));
+
+        assert_eq!(loaded.terminal_font_family, "Fira Code");
+        assert_eq!(loaded.terminal_font_size, MAX_TERMINAL_FONT_SIZE);
+        assert_eq!(
+            normalize_font_family(" \n\t ".into()),
+            DEFAULT_TERMINAL_FONT_FAMILY
         );
     }
 
