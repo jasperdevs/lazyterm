@@ -142,6 +142,9 @@ struct TerminalInputElement {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandKind {
     NewShell,
+    NewCodex,
+    NewClaude,
+    NewOpenCode,
     SplitPane,
     ToggleLayout,
     RestartPane,
@@ -168,6 +171,7 @@ impl LazytermApp {
             cwd.clone(),
             branch.clone(),
             "shell 1",
+            AgentKind::Shell,
         )];
 
         let mut app = Self {
@@ -454,6 +458,20 @@ impl LazytermApp {
             self.cwd.clone(),
             self.branch.clone(),
             format!("shell {index}"),
+            AgentKind::Shell,
+        ));
+        self.active_session = self.sessions.len() - 1;
+    }
+
+    fn create_agent_terminal(&mut self, agent: AgentKind) {
+        let index = self.sessions.len() + 1;
+        let title = format!("{} {index}", agent.label().to_ascii_lowercase());
+        self.sessions.push(TerminalSession::spawn(
+            index,
+            self.cwd.clone(),
+            self.branch.clone(),
+            title,
+            agent,
         ));
         self.active_session = self.sessions.len() - 1;
     }
@@ -472,8 +490,9 @@ impl LazytermApp {
     fn restart_active_terminal(&mut self) {
         let index = self.active_session + 1;
         let title = self.sessions[self.active_session].summary.title.clone();
+        let agent = self.sessions[self.active_session].summary.agent;
         self.sessions[self.active_session] =
-            TerminalSession::spawn(index, self.cwd.clone(), self.branch.clone(), title);
+            TerminalSession::spawn(index, self.cwd.clone(), self.branch.clone(), title, agent);
     }
 
     fn activate_session(&mut self, index: usize) {
@@ -543,6 +562,9 @@ impl LazytermApp {
     fn run_command(&mut self, command: CommandKind, cx: &mut Context<Self>) {
         match command {
             CommandKind::NewShell => self.create_terminal(),
+            CommandKind::NewCodex => self.create_agent_terminal(AgentKind::Codex),
+            CommandKind::NewClaude => self.create_agent_terminal(AgentKind::Claude),
+            CommandKind::NewOpenCode => self.create_agent_terminal(AgentKind::OpenCode),
             CommandKind::SplitPane => self.split_workspace(),
             CommandKind::ToggleLayout => self.toggle_tile_sessions(),
             CommandKind::RestartPane => self.restart_active_terminal(),
@@ -566,6 +588,21 @@ impl LazytermApp {
                 kind: CommandKind::NewShell,
                 label: "new shell",
                 shortcut: "ctrl+shift+t",
+            },
+            CommandItem {
+                kind: CommandKind::NewCodex,
+                label: "new codex",
+                shortcut: "agent",
+            },
+            CommandItem {
+                kind: CommandKind::NewClaude,
+                label: "new claude",
+                shortcut: "agent",
+            },
+            CommandItem {
+                kind: CommandKind::NewOpenCode,
+                label: "new opencode",
+                shortcut: "agent",
             },
             CommandItem {
                 kind: CommandKind::SplitPane,
@@ -642,6 +679,21 @@ impl LazytermApp {
         self.command_palette_open = !self.command_palette_open;
         if !self.command_palette_open {
             self.command_palette_query.clear();
+        }
+    }
+
+    fn push_command_palette_text(&mut self, text: &str) {
+        for character in text.chars() {
+            match character {
+                '\u{8}' | '\u{7f}' => {
+                    self.command_palette_query.pop();
+                }
+                '\r' | '\n' => {}
+                character if !character.is_control() => {
+                    self.command_palette_query.push(character);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1186,12 +1238,18 @@ impl LazytermApp {
 }
 
 impl TerminalSession {
-    fn spawn(index: usize, cwd: PathBuf, branch: Option<String>, title: impl Into<String>) -> Self {
+    fn spawn(
+        index: usize,
+        cwd: PathBuf,
+        branch: Option<String>,
+        title: impl Into<String>,
+        agent: AgentKind,
+    ) -> Self {
         let title = title.into();
         let (sender, events) = mpsc::channel();
-        let mut command = ShellCommand::default_for_platform();
+        let mut command = command_for_agent(agent);
         command.cwd = Some(cwd.clone());
-        let command_label = command.program.clone();
+        let command_label = command_label(&command);
         let mut lines = Vec::new();
 
         let (pty, status) =
@@ -1233,7 +1291,7 @@ impl TerminalSession {
             summary: SessionSummary {
                 id: SessionId::new(format!("shell-{index}")),
                 title,
-                agent: AgentKind::Shell,
+                agent,
                 status,
                 workspace: WorkspaceRef {
                     cwd,
@@ -1564,7 +1622,11 @@ impl EntityInputHandler for LazytermApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.write_bytes_to_active_pty(text.as_bytes());
+        if self.command_palette_open {
+            self.push_command_palette_text(text);
+        } else {
+            self.write_bytes_to_active_pty(text.as_bytes());
+        }
         cx.notify();
     }
 
@@ -1576,7 +1638,11 @@ impl EntityInputHandler for LazytermApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.write_bytes_to_active_pty(new_text.as_bytes());
+        if self.command_palette_open {
+            self.push_command_palette_text(new_text);
+        } else {
+            self.write_bytes_to_active_pty(new_text.as_bytes());
+        }
         cx.notify();
     }
 
@@ -1739,10 +1805,55 @@ fn tab_index_for_key(key: &str) -> Option<usize> {
 }
 
 fn session_context_label(session: &TerminalSession) -> String {
+    let title = format!(
+        "{}  /  {}",
+        session.summary.title,
+        session.summary.agent.label().to_ascii_lowercase()
+    );
+
     match session.summary.workspace.git_branch.as_deref() {
-        Some(branch) => format!("{}  /  {branch}", session.summary.title),
-        None => session.summary.title.clone(),
+        Some(branch) => format!("{title}  /  {branch}"),
+        None => title,
     }
+}
+
+fn command_for_agent(agent: AgentKind) -> ShellCommand {
+    match agent {
+        AgentKind::Shell => ShellCommand::default_for_platform(),
+        AgentKind::Codex => ShellCommand {
+            program: "codex".into(),
+            args: Vec::new(),
+            cwd: None,
+        },
+        AgentKind::Claude => ShellCommand {
+            program: "claude".into(),
+            args: Vec::new(),
+            cwd: None,
+        },
+        AgentKind::OpenCode => ShellCommand {
+            program: "opencode".into(),
+            args: Vec::new(),
+            cwd: None,
+        },
+        AgentKind::Gemini => ShellCommand {
+            program: "gemini".into(),
+            args: Vec::new(),
+            cwd: None,
+        },
+        AgentKind::Aider => ShellCommand {
+            program: "aider".into(),
+            args: Vec::new(),
+            cwd: None,
+        },
+    }
+}
+
+fn command_label(command: &ShellCommand) -> String {
+    if command.args.is_empty() {
+        return command.program.clone();
+    }
+
+    format!("{} {}", command.program, command.args.join(" "))
 }
 
 fn terminal_cell_style(cell: &Cell, cursor: CursorRender) -> TerminalCellStyle {
@@ -1951,6 +2062,24 @@ mod tests {
     #[test]
     fn control_byte_for_key_accepts_uppercase_letters() {
         assert_eq!(control_byte_for_key("C"), Some(0x03));
+    }
+
+    #[test]
+    fn agent_commands_map_to_cli_programs() {
+        assert_eq!(command_for_agent(AgentKind::Codex).program, "codex");
+        assert_eq!(command_for_agent(AgentKind::Claude).program, "claude");
+        assert_eq!(command_for_agent(AgentKind::OpenCode).program, "opencode");
+    }
+
+    #[test]
+    fn command_label_includes_arguments() {
+        let command = ShellCommand {
+            program: "pwsh.exe".into(),
+            args: vec!["-NoLogo".into(), "-NoProfile".into()],
+            cwd: None,
+        };
+
+        assert_eq!(command_label(&command), "pwsh.exe -NoLogo -NoProfile");
     }
 
     #[test]
