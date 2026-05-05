@@ -14,6 +14,11 @@ pub enum ApiRequest {
     FocusSession {
         id: String,
     },
+    SendText {
+        id: Option<String>,
+        text: String,
+        enter: bool,
+    },
     CloseOtherSessions,
     FocusAttention,
     SetLayout {

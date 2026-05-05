@@ -51,6 +51,9 @@
 - [x] Production naming split: `lazyterm.exe` is the GUI app, `lazytermctl.exe` is the control CLI
 - [x] Agent preset health checks through the UI palette and CLI/API
 - [x] Deeper terminal-first chrome pass from visual reference: removed pane headers, trimmed palette chrome, and kept the terminal as the main surface
+- [x] Text input path cleanup: printable text routes through GPUI text input, while keydown handles terminal controls/navigation
+- [x] Command palette keyboard selection with Up/Down and Enter
+- [x] CLI/API text injection with `lazytermctl send [--id <id>] [--enter] <text>`
 
 ## Next
 

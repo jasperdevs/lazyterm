@@ -22,6 +22,7 @@ cargo check --workspace --locked
 cargo test --workspace --locked
 cargo run -p lazyterm-app --bin lazyterm
 cargo run -p lazyterm-cli --bin lazytermctl -- status
+cargo run -p lazyterm-cli --bin lazytermctl -- send --enter "echo ok"
 ```
 
 ## License

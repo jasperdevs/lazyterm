@@ -74,6 +74,7 @@ pub struct LazytermApp {
     keystroke_observer: Option<Subscription>,
     command_palette_open: bool,
     command_palette_query: String,
+    command_palette_selection: usize,
     api_events: Receiver<ApiEvent>,
     ui_settings: UiSettings,
     resize_drag: Option<ResizeDrag>,
@@ -334,6 +335,7 @@ impl LazytermApp {
             keystroke_observer: None,
             command_palette_open: false,
             command_palette_query: String::new(),
+            command_palette_selection: 0,
             api_events,
             ui_settings,
             resize_drag: None,
@@ -444,6 +446,25 @@ impl LazytermApp {
                 self.active_session = index;
                 ApiResponse::Ack
             }
+            ApiRequest::SendText { id, text, enter } => {
+                let index = match id {
+                    Some(id) => {
+                        let Some(index) = self
+                            .sessions
+                            .iter()
+                            .position(|session| session.summary.id.as_str() == id)
+                        else {
+                            return ApiResponse::Error {
+                                message: format!("session '{id}' was not found"),
+                            };
+                        };
+                        index
+                    }
+                    None => self.active_session,
+                };
+                self.write_text_to_session(index, &text, enter);
+                ApiResponse::Ack
+            }
             ApiRequest::CloseOtherSessions => {
                 self.close_other_terminals();
                 ApiResponse::Ack
@@ -502,29 +523,35 @@ impl LazytermApp {
                 "escape" => {
                     self.command_palette_open = false;
                     self.command_palette_query.clear();
+                    self.command_palette_selection = 0;
                     return true;
                 }
                 "backspace" => {
                     self.command_palette_query.pop();
+                    self.command_palette_selection = 0;
+                    return true;
+                }
+                "up" => {
+                    self.select_previous_command();
+                    return true;
+                }
+                "down" => {
+                    self.select_next_command();
                     return true;
                 }
                 "enter" => {
-                    if let Some(command) = self.filtered_commands().first().cloned() {
+                    if let Some(command) = self.selected_command() {
                         self.run_command(command.kind, cx);
                         self.command_palette_open = false;
                         self.command_palette_query.clear();
+                        self.command_palette_selection = 0;
                     }
                     return true;
                 }
                 _ => {}
             }
 
-            if !modifiers.control && !modifiers.alt && !modifiers.platform && !modifiers.function {
-                if let Some(input) = keystroke.key_char.as_ref() {
-                    self.command_palette_query.push_str(input);
-                    return true;
-                }
-            }
+            return modifiers.control || modifiers.alt || modifiers.platform || modifiers.function;
         }
 
         if primary {
@@ -668,13 +695,27 @@ impl LazytermApp {
 
         if modifiers.alt {
             self.write_bytes_to_active_pty(b"\x1b");
+            self.write_bytes_to_active_pty(input.as_bytes());
+            return true;
         }
-        self.write_bytes_to_active_pty(input.as_bytes());
-        true
+
+        false
     }
 
     fn write_bytes_to_active_pty(&mut self, bytes: &[u8]) {
-        let session = &mut self.sessions[self.active_session];
+        self.write_bytes_to_session(self.active_session, bytes);
+    }
+
+    fn write_text_to_session(&mut self, session_index: usize, text: &str, enter: bool) {
+        let mut bytes = text.as_bytes().to_vec();
+        if enter {
+            bytes.push(b'\r');
+        }
+        self.write_bytes_to_session(session_index, &bytes);
+    }
+
+    fn write_bytes_to_session(&mut self, session_index: usize, bytes: &[u8]) {
+        let session = &mut self.sessions[session_index];
         let Some(pty) = &mut session.pty else {
             return;
         };
@@ -1149,6 +1190,41 @@ impl LazytermApp {
             .collect()
     }
 
+    fn selected_command(&self) -> Option<CommandItem> {
+        let commands = self.filtered_commands();
+        if commands.is_empty() {
+            return None;
+        }
+
+        commands
+            .get(self.command_palette_selection.min(commands.len() - 1))
+            .cloned()
+    }
+
+    fn select_previous_command(&mut self) {
+        let command_count = self.filtered_commands().len();
+        if command_count == 0 {
+            self.command_palette_selection = 0;
+            return;
+        }
+
+        self.command_palette_selection = if self.command_palette_selection == 0 {
+            command_count - 1
+        } else {
+            self.command_palette_selection - 1
+        };
+    }
+
+    fn select_next_command(&mut self) {
+        let command_count = self.filtered_commands().len();
+        if command_count == 0 {
+            self.command_palette_selection = 0;
+            return;
+        }
+
+        self.command_palette_selection = (self.command_palette_selection + 1) % command_count;
+    }
+
     fn focus_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }
@@ -1169,6 +1245,7 @@ impl LazytermApp {
         self.command_palette_open = !self.command_palette_open;
         if !self.command_palette_open {
             self.command_palette_query.clear();
+            self.command_palette_selection = 0;
         }
     }
 
@@ -1177,10 +1254,12 @@ impl LazytermApp {
             match character {
                 '\u{8}' | '\u{7f}' => {
                     self.command_palette_query.pop();
+                    self.command_palette_selection = 0;
                 }
                 '\r' | '\n' => {}
                 character if !character.is_control() => {
                     self.command_palette_query.push(character);
+                    self.command_palette_selection = 0;
                 }
                 _ => {}
             }
@@ -1269,7 +1348,7 @@ impl LazytermApp {
                         },
                     ))
                     .child(
-                        self.render_titlebar_button(":", "titlebar-settings", cx, |this, _| {
+                        self.render_titlebar_button(":", "titlebar-command", cx, |this, _| {
                             this.toggle_command_palette();
                         }),
                     )
@@ -1670,7 +1749,11 @@ impl LazytermApp {
     fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut commands = div().flex().flex_col().gap_2();
         for (index, command) in self.filtered_commands().into_iter().enumerate() {
-            commands = commands.child(self.render_command_action(command, index == 0, cx));
+            commands = commands.child(self.render_command_action(
+                command,
+                index == self.command_palette_selection,
+                cx,
+            ));
         }
 
         div()
@@ -1731,6 +1814,7 @@ impl LazytermApp {
                 this.run_command(command.kind, cx);
                 this.command_palette_open = false;
                 this.command_palette_query.clear();
+                this.command_palette_selection = 0;
                 this.focus_terminal(window, cx);
                 cx.notify();
             }))

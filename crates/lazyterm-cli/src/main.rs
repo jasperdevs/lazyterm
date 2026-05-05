@@ -46,6 +46,7 @@ enum HelpTopic {
     New,
     Run,
     Focus,
+    Send,
     CloseOthers,
     Attention,
     Layout,
@@ -91,6 +92,7 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             "new" => parse_session_command(args, AgentKind::Shell, HelpTopic::New),
             "run" => parse_session_command(args, AgentKind::Codex, HelpTopic::Run),
             "focus" => parse_focus_command(args),
+            "send" => parse_send_command(args),
             "close-others" => {
                 parse_no_arg_command(args, HelpTopic::CloseOthers, ApiRequest::CloseOtherSessions)
             }
@@ -126,6 +128,7 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "new" => Ok(ParsedCli::Help(HelpTopic::New)),
                 "run" => Ok(ParsedCli::Help(HelpTopic::Run)),
                 "focus" => Ok(ParsedCli::Help(HelpTopic::Focus)),
+                "send" => Ok(ParsedCli::Help(HelpTopic::Send)),
                 "close-others" => Ok(ParsedCli::Help(HelpTopic::CloseOthers)),
                 "attention" => Ok(ParsedCli::Help(HelpTopic::Attention)),
                 "layout" => Ok(ParsedCli::Help(HelpTopic::Layout)),
@@ -239,6 +242,44 @@ fn parse_focus_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, 
     Ok(ParsedCli::Request(ApiRequest::FocusSession { id }))
 }
 
+fn parse_send_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
+    let mut id = None;
+    let mut enter = false;
+    let mut text = Vec::new();
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCli::Help(HelpTopic::Send)),
+            "--id" | "-i" => {
+                id = Some(next_value(&mut args, "--id", HelpTopic::Send)?);
+            }
+            "--enter" | "-e" => enter = true,
+            "--" => {
+                text.extend(args);
+                break;
+            }
+            _ if arg.starts_with('-') => {
+                return Err(CliError::new(
+                    format!("unknown option '{arg}'"),
+                    HelpTopic::Send,
+                ));
+            }
+            _ => text.push(arg),
+        }
+    }
+
+    if text.is_empty() {
+        return Err(CliError::new("send requires text", HelpTopic::Send));
+    }
+
+    Ok(ParsedCli::Request(ApiRequest::SendText {
+        id,
+        text: text.join(" "),
+        enter,
+    }))
+}
+
 fn parse_layout_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
     let mut layout = None;
 
@@ -336,6 +377,7 @@ COMMANDS:
     new                create a shell session
     run                create a codex session
     focus <id>         focus a session
+    send <text>        send text to the active or selected session
     attention          focus the next pane that needs attention
     close-others       close every pane except the active one
     layout <mode>      set pane layout: grid, columns, rows
@@ -354,6 +396,7 @@ EXAMPLES:
     lazytermctl run --cwd . --task \"fix the parser\"
     lazytermctl new --agent shell --task \"inspect the repo\"
     lazytermctl focus session-123
+    lazytermctl send --enter \"cargo test\"
     lazytermctl close-others
     lazytermctl layout columns
     lazytermctl density compact
@@ -401,6 +444,12 @@ OPTIONS:
 lazytermctl focus <id>
 
 Focus a session in the running app.
+"
+        .to_string(),
+        HelpTopic::Send => "\
+lazytermctl send [--id <id>] [--enter] <text>
+
+Send text to a terminal. Without --id, the active pane receives it.
 "
         .to_string(),
         HelpTopic::CloseOthers => "\
@@ -567,6 +616,26 @@ mod tests {
             parsed,
             ParsedCli::Request(ApiRequest::FocusSession {
                 id: "session-123".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_send_text_to_active_or_target_session() {
+        assert_eq!(
+            parse(&["send", "--enter", "cargo", "test"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SendText {
+                id: None,
+                text: "cargo test".to_string(),
+                enter: true,
+            })
+        );
+        assert_eq!(
+            parse(&["send", "--id", "shell-2", "echo", "ok"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SendText {
+                id: Some("shell-2".to_string()),
+                text: "echo ok".to_string(),
+                enter: false,
             })
         );
     }
