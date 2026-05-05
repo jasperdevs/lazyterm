@@ -13,11 +13,12 @@ use gpui::{
     FontWeight, GlobalElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
     SharedString, Size, StatefulInteractiveElement, Style, Styled, Subscription, UTF16Selection,
-    Window,
+    Window, WindowControlArea,
 };
-use lazyterm_agents::detect_status;
+use lazyterm_agents::{detect_status, AgentPreset, AGENT_PRESETS};
 use lazyterm_api::{
-    ApiRequest, ApiResponse, TerminalDensity as ApiTerminalDensity, TileLayout as ApiTileLayout,
+    AgentHealthSummary, ApiRequest, ApiResponse, TerminalDensity as ApiTerminalDensity,
+    TileLayout as ApiTileLayout,
 };
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
@@ -46,7 +47,6 @@ const TEXT_DIM: u32 = 0x5f5f5f;
 const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
-const WORKSPACE_BAR_HEIGHT: f32 = 38.0;
 const STATUSLINE_HEIGHT: f32 = 24.0;
 const SIDEBAR_WIDTH: f32 = 58.0;
 const COMMAND_PALETTE_WIDTH: f32 = 360.0;
@@ -117,16 +117,6 @@ enum TileLayout {
     Grid,
     Columns,
     Rows,
-}
-
-impl TileLayout {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Grid => "grid",
-            Self::Columns => "columns",
-            Self::Rows => "rows",
-        }
-    }
 }
 
 impl From<ApiTileLayout> for TileLayout {
@@ -297,11 +287,11 @@ enum CommandKind {
     FontUp,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CommandItem {
     kind: CommandKind,
-    label: &'static str,
-    shortcut: &'static str,
+    label: String,
+    shortcut: String,
 }
 
 impl LazytermApp {
@@ -470,6 +460,7 @@ impl LazytermApp {
                 self.set_terminal_density(density);
                 ApiResponse::Ack
             }
+            ApiRequest::AgentHealth => ApiResponse::AgentHealth(agent_health_summaries()),
         }
     }
 
@@ -518,7 +509,7 @@ impl LazytermApp {
                     return true;
                 }
                 "enter" => {
-                    if let Some(command) = self.filtered_commands().first().copied() {
+                    if let Some(command) = self.filtered_commands().first().cloned() {
                         self.run_command(command.kind, cx);
                         self.command_palette_open = false;
                         self.command_palette_query.clear();
@@ -995,151 +986,153 @@ impl LazytermApp {
             "tile panes"
         };
 
+        let agent_shortcut = |agent| agent_health_label(agent).to_string();
+
         vec![
             CommandItem {
                 kind: CommandKind::NewShell,
-                label: "new shell",
-                shortcut: "ctrl+shift+t",
+                label: "new shell".into(),
+                shortcut: "ctrl+shift+t".into(),
             },
             CommandItem {
                 kind: CommandKind::NewCodex,
-                label: "new codex",
-                shortcut: "agent",
+                label: "new codex".into(),
+                shortcut: agent_shortcut(AgentKind::Codex),
             },
             CommandItem {
                 kind: CommandKind::NewClaude,
-                label: "new claude",
-                shortcut: "agent",
+                label: "new claude".into(),
+                shortcut: agent_shortcut(AgentKind::Claude),
             },
             CommandItem {
                 kind: CommandKind::NewOpenCode,
-                label: "new opencode",
-                shortcut: "agent",
+                label: "new opencode".into(),
+                shortcut: agent_shortcut(AgentKind::OpenCode),
             },
             CommandItem {
                 kind: CommandKind::NewGemini,
-                label: "new gemini",
-                shortcut: "agent",
+                label: "new gemini".into(),
+                shortcut: agent_shortcut(AgentKind::Gemini),
             },
             CommandItem {
                 kind: CommandKind::NewAider,
-                label: "new aider",
-                shortcut: "agent",
+                label: "new aider".into(),
+                shortcut: agent_shortcut(AgentKind::Aider),
             },
             CommandItem {
                 kind: CommandKind::SplitPane,
-                label: "split pane",
-                shortcut: "ctrl+shift+b",
+                label: "split pane".into(),
+                shortcut: "ctrl+shift+b".into(),
             },
             CommandItem {
                 kind: CommandKind::ToggleLayout,
-                label: layout_label,
-                shortcut: "ctrl+shift+b",
+                label: layout_label.into(),
+                shortcut: "ctrl+shift+b".into(),
             },
             CommandItem {
                 kind: CommandKind::TileGrid,
-                label: "layout grid",
-                shortcut: "layout",
+                label: "layout grid".into(),
+                shortcut: "layout".into(),
             },
             CommandItem {
                 kind: CommandKind::TileColumns,
-                label: "layout columns",
-                shortcut: "layout",
+                label: "layout columns".into(),
+                shortcut: "layout".into(),
             },
             CommandItem {
                 kind: CommandKind::TileRows,
-                label: "layout rows",
-                shortcut: "layout",
+                label: "layout rows".into(),
+                shortcut: "layout".into(),
             },
             CommandItem {
                 kind: CommandKind::MaximizePane,
-                label: "maximize pane",
-                shortcut: "ctrl+shift+enter",
+                label: "maximize pane".into(),
+                shortcut: "ctrl+shift+enter".into(),
             },
             CommandItem {
                 kind: CommandKind::FocusAttention,
-                label: "focus attention",
-                shortcut: "ctrl+shift+u",
+                label: "focus attention".into(),
+                shortcut: "ctrl+shift+u".into(),
             },
             CommandItem {
                 kind: CommandKind::FocusLeft,
-                label: "focus left",
-                shortcut: "ctrl+alt+left",
+                label: "focus left".into(),
+                shortcut: "ctrl+alt+left".into(),
             },
             CommandItem {
                 kind: CommandKind::FocusRight,
-                label: "focus right",
-                shortcut: "ctrl+alt+right",
+                label: "focus right".into(),
+                shortcut: "ctrl+alt+right".into(),
             },
             CommandItem {
                 kind: CommandKind::FocusUp,
-                label: "focus up",
-                shortcut: "ctrl+alt+up",
+                label: "focus up".into(),
+                shortcut: "ctrl+alt+up".into(),
             },
             CommandItem {
                 kind: CommandKind::FocusDown,
-                label: "focus down",
-                shortcut: "ctrl+alt+down",
+                label: "focus down".into(),
+                shortcut: "ctrl+alt+down".into(),
             },
             CommandItem {
                 kind: CommandKind::RestartPane,
-                label: "restart pane",
-                shortcut: "ctrl+shift+r",
+                label: "restart pane".into(),
+                shortcut: "ctrl+shift+r".into(),
             },
             CommandItem {
                 kind: CommandKind::ClosePane,
-                label: "close pane",
-                shortcut: "ctrl+shift+w",
+                label: "close pane".into(),
+                shortcut: "ctrl+shift+w".into(),
             },
             CommandItem {
                 kind: CommandKind::CloseOtherPanes,
-                label: "close other panes",
-                shortcut: "ctrl+shift+o",
+                label: "close other panes".into(),
+                shortcut: "ctrl+shift+o".into(),
             },
             CommandItem {
                 kind: CommandKind::CopyTranscript,
-                label: "copy transcript",
-                shortcut: "ctrl+shift+c",
+                label: "copy transcript".into(),
+                shortcut: "ctrl+shift+c".into(),
             },
             CommandItem {
                 kind: CommandKind::Paste,
-                label: "paste",
-                shortcut: "ctrl+shift+v",
+                label: "paste".into(),
+                shortcut: "ctrl+shift+v".into(),
             },
             CommandItem {
                 kind: CommandKind::DensityCompact,
-                label: "density compact",
-                shortcut: "layout",
+                label: "density compact".into(),
+                shortcut: "layout".into(),
             },
             CommandItem {
                 kind: CommandKind::DensityDefault,
-                label: "density default",
-                shortcut: "layout",
+                label: "density default".into(),
+                shortcut: "layout".into(),
             },
             CommandItem {
                 kind: CommandKind::DensityRoomy,
-                label: "density roomy",
-                shortcut: "layout",
+                label: "density roomy".into(),
+                shortcut: "layout".into(),
             },
             CommandItem {
                 kind: CommandKind::CompactFont,
-                label: "font compact",
-                shortcut: "11px",
+                label: "font compact".into(),
+                shortcut: "11px".into(),
             },
             CommandItem {
                 kind: CommandKind::DefaultFont,
-                label: "font default",
-                shortcut: "12px",
+                label: "font default".into(),
+                shortcut: "12px".into(),
             },
             CommandItem {
                 kind: CommandKind::FontDown,
-                label: "smaller font",
-                shortcut: "ctrl+shift+-",
+                label: "smaller font".into(),
+                shortcut: "ctrl+shift+-".into(),
             },
             CommandItem {
                 kind: CommandKind::FontUp,
-                label: "larger font",
-                shortcut: "ctrl+shift+=",
+                label: "larger font".into(),
+                shortcut: "ctrl+shift+=".into(),
             },
         ]
     }
@@ -1228,6 +1221,7 @@ impl LazytermApp {
             .border_b_1()
             .border_color(rgb(BORDER))
             .bg(rgb(BG))
+            .window_control_area(WindowControlArea::Drag)
             .child(
                 div()
                     .flex()
@@ -1304,6 +1298,10 @@ impl LazytermApp {
             .border_1()
             .border_color(rgb(BORDER))
             .bg(rgb(SURFACE))
+            .when(label == "x", |this| {
+                this.window_control_area(WindowControlArea::Close)
+            })
+            .hover(|this| this.bg(rgb(ROW_ACTIVE)).border_color(rgb(TEXT_DIM)))
             .text_color(rgb(TEXT_SOFT))
             .font_family("JetBrains Mono")
             .text_size(px(12.0))
@@ -1376,6 +1374,7 @@ impl LazytermApp {
                 BORDER
             }))
             .bg(rgb(if active { ROW_ACTIVE } else { BG }))
+            .hover(|this| this.bg(rgb(SURFACE)).border_color(rgb(TEXT_DIM)))
             .font_family("JetBrains Mono")
             .child(
                 div()
@@ -1509,6 +1508,7 @@ impl LazytermApp {
                 this.h(px(RESIZE_HANDLE_SIZE)).w_full()
             })
             .bg(rgb(BORDER))
+            .hover(|this| this.bg(rgb(TEXT_FAINT)))
             .cursor(cursor)
             .id("pane-resize-handle")
             .on_mouse_down(
@@ -1565,7 +1565,6 @@ impl LazytermApp {
             .flex_1()
             .h_full()
             .bg(rgb(BG))
-            .child(self.render_workspace_bar(session_index))
             .child(
                 div()
                     .flex_1()
@@ -1581,58 +1580,6 @@ impl LazytermApp {
                     .child(terminal_grid),
             )
             .child(self.render_statusline(session_index, focused))
-    }
-
-    fn render_workspace_bar(&self, session_index: usize) -> impl IntoElement {
-        let session = &self.sessions[session_index];
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .h(px(WORKSPACE_BAR_HEIGHT))
-            .px_3()
-            .border_b_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(BG))
-            .font_family("JetBrains Mono")
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .min_w(px(0.0))
-                    .child(div().size(px(7.0)).rounded_full().bg(rgb(
-                        if session_index == self.active_session {
-                            TEXT_SOFT
-                        } else {
-                            TEXT_FAINT
-                        },
-                    )))
-                    .child(
-                        div()
-                            .text_color(rgb(TEXT_MUTED))
-                            .text_size(px(12.0))
-                            .child(SharedString::from(session_context_label(session))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(px(11.0))
-                    .text_color(rgb(TEXT_DIM))
-                    .child(SharedString::from(format!("{} panes", self.sessions.len())))
-                    .child(SharedString::from(self.ui_settings.tile_layout.label()))
-                    .child(SharedString::from(format!(
-                        "{:.0}px",
-                        self.ui_settings.terminal_font_size
-                    )))
-                    .child(SharedString::from(format!(
-                        "{:.0}px pad",
-                        self.ui_settings.terminal_padding
-                    ))),
-            )
     }
 
     fn render_grid_row(&self, row: TerminalGridRow) -> impl IntoElement {
@@ -1683,6 +1630,7 @@ impl LazytermApp {
     fn render_statusline(&self, session_index: usize, focused: bool) -> impl IntoElement {
         let session = &self.sessions[session_index];
         let notification = session.summary.notification.as_deref().unwrap_or("");
+        let context = session_context_label(session);
         div()
             .flex()
             .items_center()
@@ -1701,9 +1649,14 @@ impl LazytermApp {
                     .items_center()
                     .gap_2()
                     .text_color(rgb(if focused { TEXT } else { TEXT_DIM }))
-                    .child(SharedString::from(session.summary.command.clone()))
+                    .child(SharedString::from(context))
                     .child(div().size(px(3.0)).rounded_full().bg(rgb(TEXT_DIM)))
-                    .child(SharedString::from(session.summary.status.label())),
+                    .child(SharedString::from(status_token(session.summary.status))),
+            )
+            .child(
+                div()
+                    .text_color(rgb(TEXT_DIM))
+                    .child(SharedString::from(session.summary.command.clone())),
             )
             .when(!notification.is_empty(), |this| {
                 this.child(
@@ -1733,42 +1686,6 @@ impl LazytermApp {
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .h(px(WORKSPACE_BAR_HEIGHT))
-                    .px_3()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(
-                        div()
-                            .text_color(rgb(TEXT))
-                            .text_size(px(12.0))
-                            .child("command"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(24.0))
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(SURFACE))
-                            .text_color(rgb(TEXT_SOFT))
-                            .text_size(px(12.0))
-                            .child("x")
-                            .id("command-palette-close")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.command_palette_open = false;
-                                this.focus_terminal(window, cx);
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
                     .flex_col()
                     .gap_1()
                     .p_2()
@@ -1793,11 +1710,12 @@ impl LazytermApp {
             .bg(rgb(if selected { ROW_ACTIVE } else { SURFACE }))
             .border_1()
             .border_color(rgb(if selected { TEXT_SOFT } else { BORDER }))
+            .hover(|this| this.bg(rgb(ROW_ACTIVE)).border_color(rgb(TEXT_DIM)))
             .child(
                 div()
                     .text_color(rgb(if selected { TEXT } else { TEXT_SOFT }))
                     .text_size(px(12.0))
-                    .child(command.label),
+                    .child(SharedString::from(command.label.clone())),
             )
             .child(
                 div()
@@ -1806,7 +1724,7 @@ impl LazytermApp {
                     .justify_center()
                     .text_color(rgb(TEXT_DIM))
                     .text_size(px(11.0))
-                    .child(command.shortcut),
+                    .child(SharedString::from(command.shortcut.clone())),
             )
             .id(format!("command-{:?}", command.kind))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1844,12 +1762,6 @@ impl LazytermApp {
                     }))
                     .text_size(px(12.0))
                     .child(SharedString::from(text)),
-            )
-            .child(
-                div()
-                    .text_color(rgb(TEXT_DIM))
-                    .text_size(px(11.0))
-                    .child("return"),
             )
     }
 }
@@ -2419,11 +2331,9 @@ fn terminal_size_for_viewport(
     let tile_rows = ((panes as f32) / tile_columns).ceil().max(1.0);
     let terminal_width =
         ((width - SIDEBAR_WIDTH) / tile_columns - (terminal_padding * 2.0)).max(160.0);
-    let terminal_height = ((height - TITLEBAR_HEIGHT) / tile_rows
-        - WORKSPACE_BAR_HEIGHT
-        - STATUSLINE_HEIGHT
-        - (terminal_padding * 2.0))
-        .max(96.0);
+    let terminal_height =
+        ((height - TITLEBAR_HEIGHT) / tile_rows - STATUSLINE_HEIGHT - (terminal_padding * 2.0))
+            .max(96.0);
     let columns = (terminal_width / terminal_char_width(terminal_font_size))
         .floor()
         .max(20.0) as u16;
@@ -2498,9 +2408,7 @@ fn terminal_size_for_split_session(
         ),
     };
     let terminal_width = (pane_width - (terminal_padding * 2.0)).max(160.0);
-    let terminal_height =
-        (pane_height - WORKSPACE_BAR_HEIGHT - STATUSLINE_HEIGHT - (terminal_padding * 2.0))
-            .max(96.0);
+    let terminal_height = (pane_height - STATUSLINE_HEIGHT - (terminal_padding * 2.0)).max(96.0);
     let columns = (terminal_width / terminal_char_width(terminal_font_size))
         .floor()
         .max(20.0) as u16;
@@ -2761,6 +2669,16 @@ fn session_context_label(session: &TerminalSession) -> String {
     }
 }
 
+fn status_token(status: SessionStatus) -> &'static str {
+    match status {
+        SessionStatus::Running => "run",
+        SessionStatus::Waiting => "wait",
+        SessionStatus::NeedsInput => "input",
+        SessionStatus::Failed => "fail",
+        SessionStatus::Done => "done",
+    }
+}
+
 fn session_needs_attention(session: &TerminalSession) -> bool {
     matches!(
         session.summary.status,
@@ -2782,34 +2700,22 @@ fn first_non_empty_line(output: &str) -> Option<&str> {
     output.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
+fn agent_preset(agent: AgentKind) -> Option<&'static AgentPreset> {
+    AGENT_PRESETS.iter().find(|preset| preset.kind == agent)
+}
+
 fn command_for_agent(agent: AgentKind) -> ShellCommand {
-    match agent {
-        AgentKind::Shell => ShellCommand::default_for_platform(),
-        AgentKind::Codex => ShellCommand {
-            program: "codex".into(),
-            args: Vec::new(),
-            cwd: None,
-        },
-        AgentKind::Claude => ShellCommand {
-            program: "claude".into(),
-            args: Vec::new(),
-            cwd: None,
-        },
-        AgentKind::OpenCode => ShellCommand {
-            program: "opencode".into(),
-            args: Vec::new(),
-            cwd: None,
-        },
-        AgentKind::Gemini => ShellCommand {
-            program: "gemini".into(),
-            args: Vec::new(),
-            cwd: None,
-        },
-        AgentKind::Aider => ShellCommand {
-            program: "aider".into(),
-            args: Vec::new(),
-            cwd: None,
-        },
+    if agent == AgentKind::Shell {
+        return ShellCommand::default_for_platform();
+    }
+
+    let Some(preset) = agent_preset(agent) else {
+        return ShellCommand::default_for_platform();
+    };
+    ShellCommand {
+        program: preset.command.into(),
+        args: preset.args.iter().map(|arg| (*arg).into()).collect(),
+        cwd: None,
     }
 }
 
@@ -2819,6 +2725,108 @@ fn command_label(command: &ShellCommand) -> String {
     }
 
     format!("{} {}", command.program, command.args.join(" "))
+}
+
+fn agent_health_summaries() -> Vec<AgentHealthSummary> {
+    AGENT_PRESETS
+        .iter()
+        .map(|preset| {
+            let command = if preset.kind == AgentKind::Shell {
+                command_for_agent(AgentKind::Shell).program
+            } else {
+                preset.command.to_string()
+            };
+            let available = preset.kind == AgentKind::Shell || executable_exists(&command);
+
+            AgentHealthSummary {
+                agent: preset.kind,
+                command,
+                available,
+            }
+        })
+        .collect()
+}
+
+fn agent_health_label(agent: AgentKind) -> &'static str {
+    if agent == AgentKind::Shell {
+        return "ready";
+    }
+
+    let Some(preset) = agent_preset(agent) else {
+        return "missing";
+    };
+
+    if executable_exists(preset.command) {
+        "ready"
+    } else {
+        "missing"
+    }
+}
+
+fn executable_exists(program: &str) -> bool {
+    executable_candidates(program)
+        .into_iter()
+        .any(|candidate| executable_file_exists(&candidate))
+}
+
+#[cfg(windows)]
+fn executable_file_exists(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(not(windows))]
+fn executable_file_exists(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+fn executable_candidates(program: &str) -> Vec<PathBuf> {
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 {
+        return executable_suffixes(program)
+            .into_iter()
+            .map(|suffix| PathBuf::from(format!("{program}{suffix}")))
+            .collect();
+    }
+
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+
+    std::env::split_paths(&path)
+        .flat_map(|dir| {
+            executable_suffixes(program)
+                .into_iter()
+                .map(move |suffix| dir.join(format!("{program}{suffix}")))
+        })
+        .collect()
+}
+
+fn executable_suffixes(program: &str) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let mut suffixes = vec![String::new()];
+        if Path::new(program).extension().is_none() {
+            let pathext =
+                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD;.PS1".into());
+            suffixes.extend(
+                pathext
+                    .split(';')
+                    .filter(|suffix| !suffix.is_empty())
+                    .map(|suffix| suffix.to_ascii_lowercase()),
+            );
+        }
+        suffixes
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = program;
+        vec![String::new()]
+    }
 }
 
 fn startup_input_bytes(task: String) -> Vec<u8> {
@@ -3038,11 +3046,47 @@ mod tests {
 
     #[test]
     fn agent_commands_map_to_cli_programs() {
-        assert_eq!(command_for_agent(AgentKind::Codex).program, "codex");
-        assert_eq!(command_for_agent(AgentKind::Claude).program, "claude");
-        assert_eq!(command_for_agent(AgentKind::OpenCode).program, "opencode");
-        assert_eq!(command_for_agent(AgentKind::Gemini).program, "gemini");
-        assert_eq!(command_for_agent(AgentKind::Aider).program, "aider");
+        for preset in AGENT_PRESETS
+            .iter()
+            .filter(|preset| preset.kind != AgentKind::Shell)
+        {
+            let command = command_for_agent(preset.kind);
+            assert_eq!(command.program, preset.command);
+            assert_eq!(
+                command.args,
+                preset
+                    .args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn agent_health_reports_all_presets() {
+        let health = agent_health_summaries();
+
+        assert_eq!(health.len(), AGENT_PRESETS.len());
+        assert!(health.iter().any(|item| item.agent == AgentKind::Shell));
+        assert!(health.iter().any(|item| item.command == "codex"));
+    }
+
+    #[test]
+    fn executable_candidates_expand_windows_pathext() {
+        let candidates = executable_candidates("codex");
+
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.ends_with("codex")));
+        if cfg!(windows) {
+            assert!(candidates
+                .iter()
+                .any(|candidate| candidate.ends_with("codex.exe")));
+            assert!(candidates
+                .iter()
+                .any(|candidate| candidate.ends_with("codex.cmd")));
+        }
     }
 
     #[test]
@@ -3431,7 +3475,7 @@ mod tests {
         );
 
         assert!(size.columns >= 20);
-        assert_eq!(size.rows, 6);
+        assert_eq!(size.rows, 8);
     }
 
     #[test]

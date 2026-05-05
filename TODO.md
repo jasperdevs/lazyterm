@@ -48,13 +48,14 @@
 - [x] Persisted pane layout modes for grid, columns, and rows
 - [x] CLI/API layout and density controls
 - [x] Drag resize handle for two-pane column/row layouts with persisted split ratio
+- [x] Production naming split: `lazyterm.exe` is the GUI app, `lazytermctl.exe` is the control CLI
+- [x] Agent preset health checks through the UI palette and CLI/API
+- [x] Deeper terminal-first chrome pass from visual reference: removed pane headers, trimmed palette chrome, and kept the terminal as the main surface
 
 ## Next
 
-- [ ] Deeper terminal-first chrome pass with screenshots against a visual reference
 - [ ] Extend resize handles beyond two-pane layouts
-- [ ] Add agent pane presets with arguments, working-directory prompts, and health checks
-- [ ] Add real split-pane resize handles
+- [ ] Add agent pane presets with arguments and working-directory prompts
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility

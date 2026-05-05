@@ -2,11 +2,12 @@
 
 Lazyterm is a Rust and GPUI terminal workspace for coding agents.
 
-This repository is still a scaffold. The current focus is the session model, agent state, transcript history, worktree flow, and local control API.
+It is terminal-first: GPUI owns the native window, Alacritty handles terminal state, and the PTY layer runs real local shells and CLI agents.
 
 ## Current Shape
 
-- `lazyterm-app` opens the GPUI window.
+- `lazyterm` opens the GPUI window.
+- `lazytermctl` controls the running app over the local socket.
 - `lazyterm-ui` owns the current app surface.
 - `lazyterm-terminal` and `lazyterm-pty` handle terminal state and process execution.
 - `lazyterm-sessions` stores session data in SQLite.
@@ -19,7 +20,8 @@ This repository is still a scaffold. The current focus is the session model, age
 cargo fmt --all --check
 cargo check --workspace --locked
 cargo test --workspace --locked
-cargo run -p lazyterm-app
+cargo run -p lazyterm-app --bin lazyterm
+cargo run -p lazyterm-cli --bin lazytermctl -- status
 ```
 
 ## License

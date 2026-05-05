@@ -22,6 +22,7 @@ pub enum ApiRequest {
     SetDensity {
         density: TerminalDensity,
     },
+    AgentHealth,
     Status,
 }
 
@@ -29,7 +30,15 @@ pub enum ApiRequest {
 pub enum ApiResponse {
     Ack,
     Sessions(Vec<SessionSummary>),
+    AgentHealth(Vec<AgentHealthSummary>),
     Error { message: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentHealthSummary {
+    pub agent: AgentKind,
+    pub command: String,
+    pub available: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

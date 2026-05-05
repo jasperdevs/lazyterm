@@ -25,7 +25,7 @@ fn main() -> ExitCode {
             }
             Err(error) => {
                 eprintln!("error: failed to reach lazyterm app on {API_ADDR}: {error}");
-                eprintln!("start lazyterm-app, then retry the command");
+                eprintln!("start lazyterm, then retry the command");
                 ExitCode::from(1)
             }
         },
@@ -50,6 +50,7 @@ enum HelpTopic {
     Attention,
     Layout,
     Density,
+    Agents,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -98,6 +99,7 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             }
             "layout" => parse_layout_command(args),
             "density" => parse_density_command(args),
+            "agents" => parse_no_arg_command(args, HelpTopic::Agents, ApiRequest::AgentHealth),
             _ => Err(CliError::new(
                 format!("unknown command '{command}'"),
                 HelpTopic::General,
@@ -128,6 +130,7 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "attention" => Ok(ParsedCli::Help(HelpTopic::Attention)),
                 "layout" => Ok(ParsedCli::Help(HelpTopic::Layout)),
                 "density" => Ok(ParsedCli::Help(HelpTopic::Density)),
+                "agents" => Ok(ParsedCli::Help(HelpTopic::Agents)),
                 "help" => Ok(ParsedCli::Help(HelpTopic::General)),
                 _ => Err(CliError::new(
                     format!("unknown help topic '{topic}'"),
@@ -321,14 +324,15 @@ fn help_text(topic: HelpTopic) -> String {
     match topic {
         HelpTopic::General => format!(
             "\
-lazyterm - control the running Lazyterm app
+lazytermctl - control the running Lazyterm app
 
 USAGE:
-    lazyterm <command> [options]
+    lazytermctl <command> [options]
 
 COMMANDS:
     list               list sessions in the running app
     status             show current app session status
+    agents             show local agent command availability
     new                create a shell session
     run                create a codex session
     focus <id>         focus a session
@@ -345,30 +349,31 @@ OPTIONS:
     -t, --task <text>  set the task text for new/run
 
 EXAMPLES:
-    lazyterm list
-    lazyterm run --cwd . --task \"fix the parser\"
-    lazyterm new --agent shell --task \"inspect the repo\"
-    lazyterm focus session-123
-    lazyterm close-others
-    lazyterm layout columns
-    lazyterm density compact
+    lazytermctl list
+    lazytermctl agents
+    lazytermctl run --cwd . --task \"fix the parser\"
+    lazytermctl new --agent shell --task \"inspect the repo\"
+    lazytermctl focus session-123
+    lazytermctl close-others
+    lazytermctl layout columns
+    lazytermctl density compact
 ",
         ),
         HelpTopic::List => "\
-lazyterm list
+lazytermctl list
 
 List sessions in the running app.
 "
         .to_string(),
         HelpTopic::Status => "\
-lazyterm status
+lazytermctl status
 
 Show session status from the running app.
 "
         .to_string(),
         HelpTopic::New => format!(
             "\
-lazyterm new [options]
+lazytermctl new [options]
 
 Create a new session with the shell agent by default.
 
@@ -381,7 +386,7 @@ OPTIONS:
         ),
         HelpTopic::Run => format!(
             "\
-lazyterm run [options]
+lazytermctl run [options]
 
 Create a new session with the codex agent by default.
 
@@ -393,33 +398,39 @@ OPTIONS:
 "
         ),
         HelpTopic::Focus => "\
-lazyterm focus <id>
+lazytermctl focus <id>
 
 Focus a session in the running app.
 "
         .to_string(),
         HelpTopic::CloseOthers => "\
-lazyterm close-others
+lazytermctl close-others
 
 Close every pane except the active pane.
 "
         .to_string(),
         HelpTopic::Attention => "\
-lazyterm attention
+lazytermctl attention
 
 Focus the next pane that needs input or failed.
 "
         .to_string(),
         HelpTopic::Layout => "\
-lazyterm layout <grid|columns|rows>
+lazytermctl layout <grid|columns|rows>
 
 Set the tiled pane layout.
 "
         .to_string(),
         HelpTopic::Density => "\
-lazyterm density <compact|default|roomy>
+lazytermctl density <compact|default|roomy>
 
 Set terminal font and padding density.
+"
+        .to_string(),
+        HelpTopic::Agents => "\
+lazytermctl agents
+
+Show whether shell, Codex, Claude, OpenCode, Gemini, and Aider commands are available.
 "
         .to_string(),
     }
@@ -585,6 +596,10 @@ mod tests {
             ParsedCli::Request(ApiRequest::SetDensity {
                 density: TerminalDensity::Compact,
             })
+        );
+        assert_eq!(
+            parse(&["agents"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::AgentHealth)
         );
     }
 
