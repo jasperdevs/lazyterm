@@ -64,6 +64,7 @@
 - [x] Application cursor mode for arrow/Home/End keys in terminal apps
 - [x] Slop UI cleanup pass: stronger rail identity, quieter command palette details, and cleaner statusline hierarchy
 - [x] CI dependency policy runs only where the cargo-deny action is supported
+- [x] Persisted vertical rail width presets through command palette and `lazytermctl rail`
 
 ## Next
 

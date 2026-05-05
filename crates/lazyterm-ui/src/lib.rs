@@ -18,7 +18,7 @@ use gpui::{
 use lazyterm_agents::{detect_status, AgentPreset, AGENT_PRESETS};
 use lazyterm_api::{
     AgentHealthSummary, ApiRequest, ApiResponse, TerminalDensity as ApiTerminalDensity,
-    TileLayout as ApiTileLayout,
+    TerminalRail as ApiTerminalRail, TileLayout as ApiTileLayout,
 };
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
@@ -49,7 +49,9 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const STATUSLINE_HEIGHT: f32 = 24.0;
-const SIDEBAR_WIDTH: f32 = 212.0;
+const COMPACT_SIDEBAR_WIDTH: f32 = 132.0;
+const DEFAULT_SIDEBAR_WIDTH: f32 = 212.0;
+const WIDE_SIDEBAR_WIDTH: f32 = 268.0;
 const COMMAND_PALETTE_WIDTH: f32 = 420.0;
 const COMMAND_PALETTE_MAX_HEIGHT: f32 = 560.0;
 const COMMAND_PALETTE_TOP: f32 = TITLEBAR_HEIGHT + 10.0;
@@ -87,6 +89,7 @@ pub struct LazytermApp {
 struct UiSettings {
     tile_sessions: bool,
     tile_layout: TileLayout,
+    rail_width: RailWidth,
     terminal_font_size: f32,
     terminal_padding: f32,
     split_ratio: f32,
@@ -107,6 +110,7 @@ struct TerminalSizing {
     font_size: f32,
     padding: f32,
     tile_layout: TileLayout,
+    sidebar_width: f32,
     pane_ratios: Vec<f32>,
     session_count: usize,
     tiled: bool,
@@ -149,6 +153,23 @@ enum TileLayout {
     Rows,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+enum RailWidth {
+    Compact,
+    Default,
+    Wide,
+}
+
+impl From<ApiTerminalRail> for RailWidth {
+    fn from(value: ApiTerminalRail) -> Self {
+        match value {
+            ApiTerminalRail::Compact => Self::Compact,
+            ApiTerminalRail::Default => Self::Default,
+            ApiTerminalRail::Wide => Self::Wide,
+        }
+    }
+}
+
 impl From<ApiTileLayout> for TileLayout {
     fn from(value: ApiTileLayout) -> Self {
         match value {
@@ -164,6 +185,7 @@ impl From<PersistedUiSettings> for UiSettings {
         Self {
             tile_sessions: value.tile_sessions,
             tile_layout: value.tile_layout,
+            rail_width: value.rail_width,
             terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
             terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
             split_ratio: value.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO),
@@ -177,6 +199,7 @@ impl From<UiSettings> for PersistedUiSettings {
         Self {
             tile_sessions: value.tile_sessions,
             tile_layout: value.tile_layout,
+            rail_width: value.rail_width,
             terminal_font_size: value.terminal_font_size,
             terminal_padding: value.terminal_padding,
             split_ratio: value.split_ratio,
@@ -190,6 +213,8 @@ struct PersistedUiSettings {
     tile_sessions: bool,
     #[serde(default = "default_tile_layout")]
     tile_layout: TileLayout,
+    #[serde(default = "default_rail_width")]
+    rail_width: RailWidth,
     terminal_font_size: f32,
     #[serde(default = "default_terminal_padding")]
     terminal_padding: f32,
@@ -324,6 +349,9 @@ enum CommandKind {
     DensityCompact,
     DensityDefault,
     DensityRoomy,
+    RailCompact,
+    RailDefault,
+    RailWide,
     CompactFont,
     DefaultFont,
     FontDown,
@@ -396,6 +424,7 @@ impl LazytermApp {
         let ui_settings = load_ui_settings(&state_dir).unwrap_or(UiSettings {
             tile_sessions: false,
             tile_layout: TileLayout::Grid,
+            rail_width: RailWidth::Default,
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
             split_ratio: DEFAULT_SPLIT_RATIO,
@@ -627,6 +656,10 @@ impl LazytermApp {
             }
             ApiRequest::SetDensity { density } => {
                 self.set_terminal_density(density);
+                ApiResponse::Ack
+            }
+            ApiRequest::SetRail { rail } => {
+                self.set_rail_width(RailWidth::from(rail));
                 ApiResponse::Ack
             }
             ApiRequest::AgentHealth => ApiResponse::AgentHealth(agent_health_summaries()),
@@ -1008,6 +1041,7 @@ impl LazytermApp {
             font_size: self.ui_settings.terminal_font_size,
             padding: self.ui_settings.terminal_padding,
             tile_layout: self.ui_settings.tile_layout,
+            sidebar_width: self.sidebar_width(),
             pane_ratios: self.ui_settings.pane_ratios.clone(),
             session_count: self.sessions.len(),
             tiled: self.ui_settings.tile_sessions,
@@ -1241,6 +1275,15 @@ impl LazytermApp {
         }
     }
 
+    fn set_rail_width(&mut self, width: RailWidth) {
+        self.ui_settings.rail_width = width;
+        self.persist_ui_settings();
+    }
+
+    fn sidebar_width(&self) -> f32 {
+        sidebar_width_for_rail(self.ui_settings.rail_width)
+    }
+
     fn toggle_tile_sessions(&mut self) {
         self.ui_settings.tile_sessions = !self.ui_settings.tile_sessions;
         self.persist_ui_settings();
@@ -1279,7 +1322,7 @@ impl LazytermApp {
         let handle_space = RESIZE_HANDLE_SIZE * (pane_count.saturating_sub(1) as f32);
         let available = match drag.orientation {
             SplitOrientation::Columns => {
-                (viewport.width.as_f32() - SIDEBAR_WIDTH - handle_space).max(1.0)
+                (viewport.width.as_f32() - self.sidebar_width() - handle_space).max(1.0)
             }
             SplitOrientation::Rows => {
                 (viewport.height.as_f32() - TITLEBAR_HEIGHT - handle_space).max(1.0)
@@ -1349,6 +1392,9 @@ impl LazytermApp {
             CommandKind::DensityCompact => self.set_density(11.0, 10.0),
             CommandKind::DensityDefault => self.set_density(12.0, DEFAULT_TERMINAL_PADDING),
             CommandKind::DensityRoomy => self.set_density(13.0, 22.0),
+            CommandKind::RailCompact => self.set_rail_width(RailWidth::Compact),
+            CommandKind::RailDefault => self.set_rail_width(RailWidth::Default),
+            CommandKind::RailWide => self.set_rail_width(RailWidth::Wide),
             CommandKind::CompactFont => self.set_font_size(11.0),
             CommandKind::DefaultFont => self.set_font_size(12.0),
             CommandKind::FontDown => self.adjust_font_size(-1.0),
@@ -1459,6 +1505,9 @@ impl LazytermApp {
             CommandItem::new(CommandKind::DensityCompact, "compact density", "", ""),
             CommandItem::new(CommandKind::DensityDefault, "default density", "", ""),
             CommandItem::new(CommandKind::DensityRoomy, "roomy density", "", ""),
+            CommandItem::new(CommandKind::RailCompact, "compact rail", "", ""),
+            CommandItem::new(CommandKind::RailDefault, "default rail", "", ""),
+            CommandItem::new(CommandKind::RailWide, "wide rail", "", ""),
             CommandItem::new(CommandKind::CompactFont, "compact font", "", ""),
             CommandItem::new(CommandKind::DefaultFont, "default font", "", ""),
             CommandItem::new(CommandKind::FontDown, "smaller font", "ctrl+shift+-", ""),
@@ -1701,7 +1750,7 @@ impl LazytermApp {
             .flex()
             .flex_col()
             .gap_1()
-            .w(px(SIDEBAR_WIDTH))
+            .w(px(self.sidebar_width()))
             .h_full()
             .border_r_1()
             .border_color(rgb(BORDER))
@@ -2958,6 +3007,7 @@ fn terminal_size_for_viewport(
     viewport: Size<Pixels>,
     terminal_font_size: f32,
     terminal_padding: f32,
+    sidebar_width: f32,
     tile_layout: TileLayout,
     session_count: usize,
     tiled: bool,
@@ -2968,7 +3018,7 @@ fn terminal_size_for_viewport(
     let tile_columns = tile_columns_for_layout(panes, tile_layout) as f32;
     let tile_rows = ((panes as f32) / tile_columns).ceil().max(1.0);
     let terminal_width =
-        ((width - SIDEBAR_WIDTH) / tile_columns - (terminal_padding * 2.0)).max(160.0);
+        ((width - sidebar_width) / tile_columns - (terminal_padding * 2.0)).max(160.0);
     let terminal_height =
         ((height - TITLEBAR_HEIGHT) / tile_rows - STATUSLINE_HEIGHT - (terminal_padding * 2.0))
             .max(96.0);
@@ -2991,6 +3041,7 @@ fn terminal_size_for_session(sizing: TerminalSizing, session_index: usize) -> Te
                     sizing.viewport,
                     sizing.font_size,
                     sizing.padding,
+                    sizing.sidebar_width,
                     ratios[session_index.min(sizing.session_count - 1)],
                     SplitOrientation::Columns,
                     sizing.session_count,
@@ -3002,6 +3053,7 @@ fn terminal_size_for_session(sizing: TerminalSizing, session_index: usize) -> Te
                     sizing.viewport,
                     sizing.font_size,
                     sizing.padding,
+                    sizing.sidebar_width,
                     ratios[session_index.min(sizing.session_count - 1)],
                     SplitOrientation::Rows,
                     sizing.session_count,
@@ -3015,6 +3067,7 @@ fn terminal_size_for_session(sizing: TerminalSizing, session_index: usize) -> Te
         sizing.viewport,
         sizing.font_size,
         sizing.padding,
+        sizing.sidebar_width,
         sizing.tile_layout,
         sizing.session_count,
         sizing.tiled,
@@ -3028,7 +3081,7 @@ fn terminal_content_bounds_for_session(
     let size = terminal_size_for_session(sizing.clone(), session_index);
     let cell_width = terminal_char_width(sizing.font_size);
     let line_height = terminal_line_height(sizing.font_size);
-    let content_width = (sizing.viewport.width.as_f32() - SIDEBAR_WIDTH).max(1.0);
+    let content_width = (sizing.viewport.width.as_f32() - sizing.sidebar_width).max(1.0);
     let content_height = (sizing.viewport.height.as_f32() - TITLEBAR_HEIGHT).max(1.0);
     let padding = sizing.padding;
 
@@ -3042,7 +3095,7 @@ fn terminal_content_bounds_for_session(
                     .max(1.0);
                 let offset = ratios.iter().take(pane_index).sum::<f32>() * split_width
                     + RESIZE_HANDLE_SIZE * pane_index as f32;
-                (SIDEBAR_WIDTH + offset, TITLEBAR_HEIGHT)
+                (sizing.sidebar_width + offset, TITLEBAR_HEIGHT)
             }
             TileLayout::Rows => {
                 let ratios = normalize_pane_ratios(&sizing.pane_ratios, sizing.session_count);
@@ -3052,7 +3105,7 @@ fn terminal_content_bounds_for_session(
                     .max(1.0);
                 let offset = ratios.iter().take(pane_index).sum::<f32>() * split_height
                     + RESIZE_HANDLE_SIZE * pane_index as f32;
-                (SIDEBAR_WIDTH, TITLEBAR_HEIGHT + offset)
+                (sizing.sidebar_width, TITLEBAR_HEIGHT + offset)
             }
             TileLayout::Grid => {
                 grid_pane_origin(sizing, session_index, content_width, content_height)
@@ -3061,7 +3114,7 @@ fn terminal_content_bounds_for_session(
     } else if sizing.tiled {
         grid_pane_origin(sizing, session_index, content_width, content_height)
     } else {
-        (SIDEBAR_WIDTH, TITLEBAR_HEIGHT)
+        (sizing.sidebar_width, TITLEBAR_HEIGHT)
     };
 
     TerminalContentBounds {
@@ -3095,7 +3148,7 @@ fn grid_pane_origin(
     let tile_height = content_height / rows as f32;
 
     (
-        SIDEBAR_WIDTH + tile_width * column as f32,
+        sizing.sidebar_width + tile_width * column as f32,
         TITLEBAR_HEIGHT + tile_height * row as f32,
     )
 }
@@ -3104,6 +3157,7 @@ fn terminal_size_for_split_session(
     viewport: Size<Pixels>,
     terminal_font_size: f32,
     terminal_padding: f32,
+    sidebar_width: f32,
     ratio: f32,
     orientation: SplitOrientation,
     pane_count: usize,
@@ -3114,11 +3168,11 @@ fn terminal_size_for_split_session(
     let height = viewport.height.as_f32();
     let (pane_width, pane_height) = match orientation {
         SplitOrientation::Columns => (
-            ((width - SIDEBAR_WIDTH - handle_space).max(1.0) * ratio).max(160.0),
+            ((width - sidebar_width - handle_space).max(1.0) * ratio).max(160.0),
             (height - TITLEBAR_HEIGHT).max(1.0),
         ),
         SplitOrientation::Rows => (
-            (width - SIDEBAR_WIDTH).max(160.0),
+            (width - sidebar_width).max(160.0),
             ((height - TITLEBAR_HEIGHT - handle_space).max(1.0) * ratio).max(96.0),
         ),
     };
@@ -3159,6 +3213,18 @@ fn default_terminal_padding() -> f32 {
 
 fn default_tile_layout() -> TileLayout {
     TileLayout::Grid
+}
+
+fn default_rail_width() -> RailWidth {
+    RailWidth::Default
+}
+
+fn sidebar_width_for_rail(width: RailWidth) -> f32 {
+    match width {
+        RailWidth::Compact => COMPACT_SIDEBAR_WIDTH,
+        RailWidth::Default => DEFAULT_SIDEBAR_WIDTH,
+        RailWidth::Wide => WIDE_SIDEBAR_WIDTH,
+    }
 }
 
 fn default_split_ratio() -> f32 {
@@ -4250,6 +4316,7 @@ mod tests {
         let settings = UiSettings {
             tile_sessions: true,
             tile_layout: TileLayout::Columns,
+            rail_width: RailWidth::Wide,
             terminal_font_size: 15.0,
             terminal_padding: 22.0,
             split_ratio: 0.65,
@@ -4261,6 +4328,7 @@ mod tests {
         let loaded = load_ui_settings(&state_dir).expect("settings load");
         assert_eq!(loaded.tile_sessions, settings.tile_sessions);
         assert_eq!(loaded.tile_layout, settings.tile_layout);
+        assert_eq!(loaded.rail_width, settings.rail_width);
         assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
         assert_eq!(loaded.terminal_padding, settings.terminal_padding);
         assert_eq!(loaded.split_ratio, settings.split_ratio);
@@ -4407,6 +4475,7 @@ mod tests {
             viewport,
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Columns,
             3,
             true,
@@ -4415,6 +4484,7 @@ mod tests {
             viewport,
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Rows,
             3,
             true,
@@ -4435,6 +4505,7 @@ mod tests {
             font_size: 12.0,
             padding: DEFAULT_TERMINAL_PADDING,
             tile_layout: TileLayout::Columns,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             pane_ratios: vec![0.7, 0.3],
             session_count: 2,
             tiled: true,
@@ -4596,6 +4667,7 @@ mod tests {
             font_size: 12.0,
             padding: DEFAULT_TERMINAL_PADDING,
             tile_layout: TileLayout::Columns,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             pane_ratios: vec![0.7, 0.3],
             session_count: 2,
             tiled: true,
@@ -4604,7 +4676,10 @@ mod tests {
         let first = terminal_content_bounds_for_session(sizing.clone(), 0);
         let second = terminal_content_bounds_for_session(sizing, 1);
 
-        assert_eq!(first.origin.x, px(SIDEBAR_WIDTH + DEFAULT_TERMINAL_PADDING));
+        assert_eq!(
+            first.origin.x,
+            px(DEFAULT_SIDEBAR_WIDTH + DEFAULT_TERMINAL_PADDING)
+        );
         assert!(second.origin.x > first.origin.x);
         assert_eq!(first.origin.y, second.origin.y);
         assert!(first.columns > second.columns);
@@ -4750,6 +4825,7 @@ mod tests {
             },
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Grid,
             1,
             false,
@@ -4768,6 +4844,7 @@ mod tests {
             },
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Grid,
             1,
             false,
@@ -4786,6 +4863,7 @@ mod tests {
             },
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Grid,
             1,
             false,
@@ -4797,6 +4875,7 @@ mod tests {
             },
             16.0,
             DEFAULT_TERMINAL_PADDING,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Grid,
             1,
             false,
@@ -4815,6 +4894,7 @@ mod tests {
             },
             12.0,
             8.0,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Grid,
             1,
             false,
@@ -4826,6 +4906,7 @@ mod tests {
             },
             12.0,
             24.0,
+            DEFAULT_SIDEBAR_WIDTH,
             TileLayout::Grid,
             1,
             false,

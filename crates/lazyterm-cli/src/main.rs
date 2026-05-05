@@ -4,7 +4,7 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use lazyterm_api::{ApiRequest, ApiResponse, TerminalDensity, TileLayout};
+use lazyterm_api::{ApiRequest, ApiResponse, TerminalDensity, TerminalRail, TileLayout};
 use lazyterm_core::AgentKind;
 
 const API_ADDR: &str = "127.0.0.1:47431";
@@ -56,6 +56,7 @@ enum HelpTopic {
     Attention,
     Layout,
     Density,
+    Rail,
     Agents,
 }
 
@@ -117,6 +118,7 @@ fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<ParsedCli, CliErr
             }
             "layout" => parse_layout_command(args),
             "density" => parse_density_command(args),
+            "rail" => parse_rail_command(args),
             "agents" => parse_no_arg_command(args, HelpTopic::Agents, ApiRequest::AgentHealth),
             _ => Err(CliError::new(
                 format!("unknown command '{command}'"),
@@ -154,6 +156,7 @@ fn parse_help_command(mut args: impl Iterator<Item = String>) -> Result<ParsedCl
                 "attention" => Ok(ParsedCli::Help(HelpTopic::Attention)),
                 "layout" => Ok(ParsedCli::Help(HelpTopic::Layout)),
                 "density" => Ok(ParsedCli::Help(HelpTopic::Density)),
+                "rail" => Ok(ParsedCli::Help(HelpTopic::Rail)),
                 "agents" => Ok(ParsedCli::Help(HelpTopic::Agents)),
                 "help" => Ok(ParsedCli::Help(HelpTopic::General)),
                 _ => Err(CliError::new(
@@ -422,6 +425,34 @@ fn parse_density_command(args: impl Iterator<Item = String>) -> Result<ParsedCli
     Ok(ParsedCli::Request(ApiRequest::SetDensity { density }))
 }
 
+fn parse_rail_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, CliError> {
+    let mut rail = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(ParsedCli::Help(HelpTopic::Rail)),
+            _ if arg.starts_with('-') => {
+                return Err(CliError::new(
+                    format!("unknown option '{arg}'"),
+                    HelpTopic::Rail,
+                ));
+            }
+            _ if rail.is_none() => rail = Some(parse_terminal_rail(&arg)?),
+            _ => {
+                return Err(CliError::new(
+                    format!("unexpected argument '{arg}'"),
+                    HelpTopic::Rail,
+                ));
+            }
+        }
+    }
+
+    let rail = rail
+        .ok_or_else(|| CliError::new("rail requires compact, default, or wide", HelpTopic::Rail))?;
+
+    Ok(ParsedCli::Request(ApiRequest::SetRail { rail }))
+}
+
 fn send_request(request: &ApiRequest) -> std::io::Result<ApiResponse> {
     let mut stream = TcpStream::connect(API_ADDR)?;
     serde_json::to_writer(&mut stream, request).map_err(std::io::Error::other)?;
@@ -468,6 +499,7 @@ COMMANDS:
     close-others       close every pane except the active one
     layout <mode>      set pane layout: grid, columns, rows
     density <mode>     set terminal density: compact, default, roomy
+    rail <mode>        set vertical tab rail: compact, default, wide
     help [command]     show help for a command
 
 OPTIONS:
@@ -489,6 +521,7 @@ EXAMPLES:
     lazytermctl close-others
     lazytermctl layout columns
     lazytermctl density compact
+    lazytermctl rail wide
 ",
         ),
         HelpTopic::List => "\
@@ -595,6 +628,12 @@ lazytermctl density <compact|default|roomy>
 Set terminal font and padding density.
 "
         .to_string(),
+        HelpTopic::Rail => "\
+lazytermctl rail <compact|default|wide>
+
+Set vertical tab rail width.
+"
+        .to_string(),
         HelpTopic::Agents => "\
 lazytermctl agents
 
@@ -673,6 +712,18 @@ fn parse_terminal_density(value: &str) -> Result<TerminalDensity, CliError> {
         _ => Err(CliError::new(
             format!("unknown density '{value}' (expected compact, default, or roomy)"),
             HelpTopic::Density,
+        )),
+    }
+}
+
+fn parse_terminal_rail(value: &str) -> Result<TerminalRail, CliError> {
+    match value.to_ascii_lowercase().as_str() {
+        "compact" | "narrow" => Ok(TerminalRail::Compact),
+        "default" | "normal" => Ok(TerminalRail::Default),
+        "wide" | "large" => Ok(TerminalRail::Wide),
+        _ => Err(CliError::new(
+            format!("unknown rail '{value}' (expected compact, default, or wide)"),
+            HelpTopic::Rail,
         )),
     }
 }
@@ -829,6 +880,12 @@ mod tests {
             parse(&["density", "compact"]).expect("parsed"),
             ParsedCli::Request(ApiRequest::SetDensity {
                 density: TerminalDensity::Compact,
+            })
+        );
+        assert_eq!(
+            parse(&["rail", "wide"]).expect("parsed"),
+            ParsedCli::Request(ApiRequest::SetRail {
+                rail: TerminalRail::Wide,
             })
         );
         assert_eq!(

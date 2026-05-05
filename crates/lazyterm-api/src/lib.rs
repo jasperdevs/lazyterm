@@ -39,6 +39,9 @@ pub enum ApiRequest {
     SetDensity {
         density: TerminalDensity,
     },
+    SetRail {
+        rail: TerminalRail,
+    },
     AgentHealth,
     Status,
 }
@@ -70,4 +73,11 @@ pub enum TerminalDensity {
     Compact,
     Default,
     Roomy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TerminalRail {
+    Compact,
+    Default,
+    Wide,
 }

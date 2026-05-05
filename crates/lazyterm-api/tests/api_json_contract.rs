@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use lazyterm_api::{
     AgentHealthSummary, AgentKind, ApiRequest, ApiResponse, SessionId, SessionStatus,
-    SessionSummary, TerminalDensity, TileLayout, WorkspaceRef,
+    SessionSummary, TerminalDensity, TerminalRail, TileLayout, WorkspaceRef,
 };
 use serde_json::json;
 
@@ -68,6 +68,10 @@ fn control_enums_round_trip_as_named_variants() {
     assert_eq!(
         serde_json::to_value(TerminalDensity::Roomy).expect("serialize density"),
         json!("Roomy")
+    );
+    assert_eq!(
+        serde_json::to_value(TerminalRail::Wide).expect("serialize rail"),
+        json!("Wide")
     );
     assert_eq!(
         serde_json::to_value(AgentHealthSummary {
