@@ -10,10 +10,13 @@
 - [x] CLI command shape cleanup
 - [x] GPUI app/UI polish
 - [x] Verification, licensing, and release-risk review
+- [x] Real keyboard input path in the GPUI shell surface
+- [x] Custom monochrome titlebar with the Lazyterm logo
+- [x] Streaming PTY-backed shell sessions in the GPUI surface
+- [x] Functional vertical terminal tabs with per-tab shell state
 
 ## Next
 
-- [ ] Wire live PTY output into the GPUI terminal surface
 - [ ] Add app socket transport for the CLI/API
 - [ ] Replace demo sessions with persisted session state
 - [ ] Add real split-pane data model and UI interactions

@@ -2884,6 +2884,7 @@ dependencies = [
 name = "lazyterm-app"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "gpui",
  "gpui_platform",
  "lazyterm-ui",
@@ -2941,8 +2942,9 @@ name = "lazyterm-ui"
 version = "0.1.0"
 dependencies = [
  "gpui",
- "lazyterm-agents",
  "lazyterm-core",
+ "lazyterm-pty",
+ "lazyterm-terminal",
 ]
 
 [[package]]

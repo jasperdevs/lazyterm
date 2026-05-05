@@ -8,8 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 gpui.workspace = true
-lazyterm-agents = { path = "../lazyterm-agents" }
 lazyterm-core = { path = "../lazyterm-core" }
+lazyterm-pty = { path = "../lazyterm-pty" }
+lazyterm-terminal = { path = "../lazyterm-terminal" }
 
 [lints]
 workspace = true

@@ -64,6 +64,16 @@ pub struct PtySession {
     writer: Box<dyn Write + Send>,
 }
 
+pub struct PtyHandle {
+    master: Box<dyn MasterPty + Send>,
+    child: Box<dyn Child + Send + Sync>,
+    writer: Box<dyn Write + Send>,
+}
+
+pub struct PtyReader {
+    reader: Box<dyn Read + Send>,
+}
+
 impl PtySession {
     pub fn spawn(command: &ShellCommand, size: impl Into<PtySize>) -> Result<Self> {
         let pty_system = native_pty_system();
@@ -100,6 +110,51 @@ impl PtySession {
 
     pub fn kill(&mut self) -> std::io::Result<()> {
         self.child.kill()
+    }
+
+    pub fn split(self) -> (PtyHandle, PtyReader) {
+        (
+            PtyHandle {
+                master: self.master,
+                child: self.child,
+                writer: self.writer,
+            },
+            PtyReader {
+                reader: self.reader,
+            },
+        )
+    }
+}
+
+impl PtyHandle {
+    pub fn resize(&self, size: impl Into<PtySize>) -> Result<()> {
+        self.master.resize(size.into())
+    }
+
+    pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        self.writer.write_all(bytes)?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    pub fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    pub fn kill(&mut self) -> std::io::Result<()> {
+        self.child.kill()
+    }
+}
+
+impl Drop for PtyHandle {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+impl PtyReader {
+    pub fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buffer)
     }
 }
 
