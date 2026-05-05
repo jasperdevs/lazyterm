@@ -49,8 +49,8 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const STATUSLINE_HEIGHT: f32 = 24.0;
-const SIDEBAR_WIDTH: f32 = 180.0;
-const COMMAND_PALETTE_WIDTH: f32 = 360.0;
+const SIDEBAR_WIDTH: f32 = 212.0;
+const COMMAND_PALETTE_WIDTH: f32 = 420.0;
 const COMMAND_PALETTE_MAX_HEIGHT: f32 = 560.0;
 const COMMAND_PALETTE_TOP: f32 = TITLEBAR_HEIGHT + 10.0;
 const DEFAULT_TERMINAL_PADDING: f32 = 16.0;
@@ -61,7 +61,7 @@ const MIN_PANE_RATIO: f32 = 0.08;
 const RESIZE_HANDLE_SIZE: f32 = 6.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
-const TAB_HEIGHT: f32 = 42.0;
+const TAB_HEIGHT: f32 = 54.0;
 const API_BIND_ADDR: &str = "127.0.0.1:47431";
 const API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1367,7 +1367,7 @@ impl LazytermApp {
             "tile panes"
         };
 
-        let agent_shortcut = |agent| agent_health_label(agent).to_string();
+        let agent_status = |agent| agent_health_label(agent).to_string();
 
         vec![
             CommandItem::new(CommandKind::NewShell, "new shell", "ctrl+shift+t", ""),
@@ -1375,37 +1375,37 @@ impl LazytermApp {
                 CommandKind::NewCodex,
                 "new codex",
                 "",
-                agent_shortcut(AgentKind::Codex),
+                agent_status(AgentKind::Codex),
             ),
             CommandItem::new(
                 CommandKind::NewClaude,
                 "new claude",
                 "",
-                agent_shortcut(AgentKind::Claude),
+                agent_status(AgentKind::Claude),
             ),
             CommandItem::new(
                 CommandKind::NewOpenCode,
                 "new opencode",
                 "",
-                agent_shortcut(AgentKind::OpenCode),
+                agent_status(AgentKind::OpenCode),
             ),
             CommandItem::new(
                 CommandKind::NewGemini,
                 "new gemini",
                 "",
-                agent_shortcut(AgentKind::Gemini),
+                agent_status(AgentKind::Gemini),
             ),
             CommandItem::new(
                 CommandKind::NewAider,
                 "new aider",
                 "",
-                agent_shortcut(AgentKind::Aider),
+                agent_status(AgentKind::Aider),
             ),
             CommandItem::new(CommandKind::SplitPane, "split pane", "ctrl+shift+b", ""),
-            CommandItem::new(CommandKind::ToggleLayout, layout_label, "", "layout"),
-            CommandItem::new(CommandKind::TileGrid, "grid", "", "layout"),
-            CommandItem::new(CommandKind::TileColumns, "columns", "", "layout"),
-            CommandItem::new(CommandKind::TileRows, "rows", "", "layout"),
+            CommandItem::new(CommandKind::ToggleLayout, layout_label, "", ""),
+            CommandItem::new(CommandKind::TileGrid, "grid", "", ""),
+            CommandItem::new(CommandKind::TileColumns, "columns", "", ""),
+            CommandItem::new(CommandKind::TileRows, "rows", "", ""),
             CommandItem::new(
                 CommandKind::MaximizePane,
                 "maximize pane",
@@ -1456,11 +1456,11 @@ impl LazytermApp {
                 "ctrl+shift+end",
                 "",
             ),
-            CommandItem::new(CommandKind::DensityCompact, "compact density", "", "view"),
-            CommandItem::new(CommandKind::DensityDefault, "default density", "", "view"),
-            CommandItem::new(CommandKind::DensityRoomy, "roomy density", "", "view"),
-            CommandItem::new(CommandKind::CompactFont, "compact font", "", "11px"),
-            CommandItem::new(CommandKind::DefaultFont, "default font", "", "12px"),
+            CommandItem::new(CommandKind::DensityCompact, "compact density", "", ""),
+            CommandItem::new(CommandKind::DensityDefault, "default density", "", ""),
+            CommandItem::new(CommandKind::DensityRoomy, "roomy density", "", ""),
+            CommandItem::new(CommandKind::CompactFont, "compact font", "", ""),
+            CommandItem::new(CommandKind::DefaultFont, "default font", "", ""),
             CommandItem::new(CommandKind::FontDown, "smaller font", "ctrl+shift+-", ""),
             CommandItem::new(CommandKind::FontUp, "larger font", "ctrl+shift+=", ""),
         ]
@@ -1599,7 +1599,7 @@ impl LazytermApp {
                     .font_family("JetBrains Mono")
                     .child(
                         div()
-                            .size(px(22.0))
+                            .size(px(24.0))
                             .rounded(px(4.0))
                             .overflow_hidden()
                             .child(img("logoblackbackground.svg").size_full()),
@@ -1785,7 +1785,7 @@ impl LazytermApp {
                         div()
                             .w(px(28.0))
                             .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
-                            .text_size(px(15.0))
+                            .text_size(px(16.0))
                             .font_weight(FontWeight::BOLD)
                             .child(format!("{:02}", index + 1)),
                     )
@@ -1797,7 +1797,7 @@ impl LazytermApp {
                             .child(
                                 div()
                                     .text_color(rgb(if active { TEXT } else { TEXT_SOFT }))
-                                    .text_size(px(12.0))
+                                    .text_size(px(13.0))
                                     .font_weight(if active {
                                         FontWeight::BOLD
                                     } else {
@@ -1806,9 +1806,15 @@ impl LazytermApp {
                                     .child(SharedString::from(session.summary.title.clone())),
                             )
                             .child(
-                                div().text_color(rgb(TEXT_DIM)).text_size(px(10.0)).child(
-                                    SharedString::from(status_token(session.summary.status)),
-                                ),
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_color(rgb(if active { TEXT_MUTED } else { TEXT_DIM }))
+                                    .text_size(px(10.0))
+                                    .child(SharedString::from(status_label(session.summary.status)))
+                                    .child(SharedString::from(" / "))
+                                    .child(SharedString::from(session.summary.agent.label())),
                             ),
                     ),
             )
@@ -2187,6 +2193,7 @@ impl LazytermApp {
         let session = &self.sessions[session_index];
         let notification = session.summary.notification.as_deref().unwrap_or("");
         let context = session_context_label(session);
+        let status = status_label(session.summary.status);
         div()
             .flex()
             .items_center()
@@ -2205,13 +2212,16 @@ impl LazytermApp {
                     .items_center()
                     .gap_2()
                     .text_color(rgb(if focused { TEXT } else { TEXT_DIM }))
-                    .child(SharedString::from(context))
-                    .child(div().size(px(3.0)).rounded_full().bg(rgb(TEXT_DIM)))
-                    .child(SharedString::from(status_token(session.summary.status))),
+                    .child(SharedString::from(context)),
             )
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .text_color(rgb(TEXT_DIM))
+                    .child(SharedString::from(status))
+                    .child(div().size(px(3.0)).rounded_full().bg(rgb(TEXT_DIM)))
                     .child(SharedString::from(session.summary.command.clone())),
             )
             .when(!notification.is_empty(), |this| {
@@ -2276,6 +2286,8 @@ impl LazytermApp {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let detail = command_detail(&command);
+
         div()
             .flex()
             .items_center()
@@ -2293,15 +2305,17 @@ impl LazytermApp {
                     .text_size(px(12.0))
                     .child(SharedString::from(command.label.clone())),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(rgb(TEXT_DIM))
-                    .text_size(px(11.0))
-                    .child(SharedString::from(command_detail(&command))),
-            )
+            .when(!detail.is_empty(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(TEXT_DIM))
+                        .text_size(px(11.0))
+                        .child(SharedString::from(detail.clone())),
+                )
+            })
             .id(format!("command-{:?}", command.kind))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.run_command(command.kind, cx);
@@ -3407,12 +3421,12 @@ fn session_context_label(session: &TerminalSession) -> String {
     }
 }
 
-fn status_token(status: SessionStatus) -> &'static str {
+fn status_label(status: SessionStatus) -> &'static str {
     match status {
-        SessionStatus::Running => "run",
-        SessionStatus::Waiting => "wait",
-        SessionStatus::NeedsInput => "input",
-        SessionStatus::Failed => "fail",
+        SessionStatus::Running => "running",
+        SessionStatus::Waiting => "waiting",
+        SessionStatus::NeedsInput => "needs input",
+        SessionStatus::Failed => "failed",
         SessionStatus::Done => "done",
     }
 }
@@ -3422,7 +3436,11 @@ fn command_detail(command: &CommandItem) -> String {
         return command.shortcut.clone();
     }
 
-    command.meta.clone()
+    match command.meta.as_str() {
+        "ready" => "installed".into(),
+        "missing" => "missing".into(),
+        _ => command.meta.clone(),
+    }
 }
 
 fn session_needs_attention(session: &TerminalSession) -> bool {
