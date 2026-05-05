@@ -16,10 +16,13 @@ use gpui::{
 };
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
+use lazyterm_sessions::SessionStore;
 use lazyterm_terminal::TerminalSize;
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::io;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
@@ -49,6 +52,7 @@ pub struct LazytermApp {
     focus_handle: FocusHandle,
     cwd: PathBuf,
     branch: Option<String>,
+    state_dir: PathBuf,
     sessions: Vec<TerminalSession>,
     active_session: usize,
     poller_started: bool,
@@ -59,7 +63,32 @@ pub struct LazytermApp {
     ui_settings: UiSettings,
 }
 
+#[derive(Clone, Copy, Debug)]
 struct UiSettings {
+    tile_sessions: bool,
+    terminal_font_size: f32,
+}
+
+impl From<PersistedUiSettings> for UiSettings {
+    fn from(value: PersistedUiSettings) -> Self {
+        Self {
+            tile_sessions: value.tile_sessions,
+            terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
+        }
+    }
+}
+
+impl From<UiSettings> for PersistedUiSettings {
+    fn from(value: UiSettings) -> Self {
+        Self {
+            tile_sessions: value.tile_sessions,
+            terminal_font_size: value.terminal_font_size,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+struct PersistedUiSettings {
     tile_sessions: bool,
     terminal_font_size: f32,
 }
@@ -166,18 +195,29 @@ impl LazytermApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let branch = current_branch();
-        let sessions = vec![TerminalSession::spawn(
-            1,
-            cwd.clone(),
-            branch.clone(),
-            "shell 1",
-            AgentKind::Shell,
-        )];
+        let state_dir = app_state_dir();
+        let ui_settings = load_ui_settings(&state_dir).unwrap_or(UiSettings {
+            tile_sessions: false,
+            terminal_font_size: 12.0,
+        });
+        let sessions = load_session_summaries(&state_dir)
+            .map(|summaries| spawn_persisted_sessions(summaries, branch.clone()))
+            .filter(|sessions| !sessions.is_empty())
+            .unwrap_or_else(|| {
+                vec![TerminalSession::spawn(
+                    1,
+                    cwd.clone(),
+                    branch.clone(),
+                    "shell 1",
+                    AgentKind::Shell,
+                )]
+            });
 
         let mut app = Self {
             focus_handle: cx.focus_handle().tab_stop(true),
             cwd,
             branch,
+            state_dir,
             sessions,
             active_session: 0,
             poller_started: false,
@@ -185,10 +225,7 @@ impl LazytermApp {
             keystroke_observer: None,
             command_palette_open: false,
             command_palette_query: String::new(),
-            ui_settings: UiSettings {
-                tile_sessions: false,
-                terminal_font_size: 12.0,
-            },
+            ui_settings,
         };
 
         app.keystroke_observer = Some(cx.observe_keystrokes(|this, event, window, cx| {
@@ -204,6 +241,7 @@ impl LazytermApp {
             }
         }));
 
+        app.persist_state();
         app
     }
 
@@ -461,6 +499,7 @@ impl LazytermApp {
             AgentKind::Shell,
         ));
         self.active_session = self.sessions.len() - 1;
+        self.persist_state();
     }
 
     fn create_agent_terminal(&mut self, agent: AgentKind) {
@@ -474,6 +513,7 @@ impl LazytermApp {
             agent,
         ));
         self.active_session = self.sessions.len() - 1;
+        self.persist_state();
     }
 
     fn close_active_terminal(&mut self) {
@@ -485,6 +525,7 @@ impl LazytermApp {
         if self.active_session >= self.sessions.len() {
             self.active_session = self.sessions.len() - 1;
         }
+        self.persist_state();
     }
 
     fn restart_active_terminal(&mut self) {
@@ -493,6 +534,7 @@ impl LazytermApp {
         let agent = self.sessions[self.active_session].summary.agent;
         self.sessions[self.active_session] =
             TerminalSession::spawn(index, self.cwd.clone(), self.branch.clone(), title, agent);
+        self.persist_state();
     }
 
     fn activate_session(&mut self, index: usize) {
@@ -546,10 +588,12 @@ impl LazytermApp {
     fn adjust_font_size(&mut self, delta: f32) {
         self.ui_settings.terminal_font_size =
             (self.ui_settings.terminal_font_size + delta).clamp(10.0, 16.0);
+        self.persist_ui_settings();
     }
 
     fn toggle_tile_sessions(&mut self) {
         self.ui_settings.tile_sessions = !self.ui_settings.tile_sessions;
+        self.persist_ui_settings();
     }
 
     fn split_workspace(&mut self) {
@@ -557,6 +601,7 @@ impl LazytermApp {
             self.create_terminal();
         }
         self.ui_settings.tile_sessions = true;
+        self.persist_ui_settings();
     }
 
     fn run_command(&mut self, command: CommandKind, cx: &mut Context<Self>) {
@@ -694,6 +739,30 @@ impl LazytermApp {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn persist_state(&self) {
+        self.persist_ui_settings();
+        self.persist_sessions();
+    }
+
+    fn persist_ui_settings(&self) {
+        if let Err(error) = save_ui_settings(&self.state_dir, self.ui_settings) {
+            eprintln!("lazyterm: failed to save ui settings: {error}");
+        }
+    }
+
+    fn persist_sessions(&self) {
+        if let Err(error) = save_session_summaries(
+            &self.state_dir,
+            &self
+                .sessions
+                .iter()
+                .map(|session| session.summary.clone())
+                .collect::<Vec<_>>(),
+        ) {
+            eprintln!("lazyterm: failed to save sessions: {error}");
         }
     }
 
@@ -1766,6 +1835,83 @@ fn terminal_size_for_viewport(
     TerminalSize::new(columns, rows)
 }
 
+fn app_state_dir() -> PathBuf {
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local_app_data).join("lazyterm");
+    }
+
+    if let Some(xdg_state_home) = std::env::var_os("XDG_STATE_HOME") {
+        return PathBuf::from(xdg_state_home).join("lazyterm");
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("state")
+            .join("lazyterm");
+    }
+
+    PathBuf::from(".lazyterm")
+}
+
+fn load_ui_settings(state_dir: &Path) -> Option<UiSettings> {
+    let path = state_dir.join("ui-settings.json");
+    let payload = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<PersistedUiSettings>(&payload)
+        .ok()
+        .map(Into::into)
+}
+
+fn save_ui_settings(
+    state_dir: &Path,
+    settings: UiSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(state_dir)?;
+    let payload = serde_json::to_string_pretty(&PersistedUiSettings::from(settings))?;
+    fs::write(state_dir.join("ui-settings.json"), payload)?;
+    Ok(())
+}
+
+fn load_session_summaries(state_dir: &Path) -> Option<Vec<SessionSummary>> {
+    fs::create_dir_all(state_dir).ok()?;
+    SessionStore::open(state_dir.join("sessions.sqlite"))
+        .ok()?
+        .list()
+        .ok()
+}
+
+fn save_session_summaries(
+    state_dir: &Path,
+    summaries: &[SessionSummary],
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(state_dir)?;
+    let mut store = SessionStore::open(state_dir.join("sessions.sqlite"))?;
+    store.replace_all(summaries)?;
+    Ok(())
+}
+
+fn spawn_persisted_sessions(
+    summaries: Vec<SessionSummary>,
+    fallback_branch: Option<String>,
+) -> Vec<TerminalSession> {
+    summaries
+        .into_iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            TerminalSession::spawn(
+                index + 1,
+                summary.workspace.cwd,
+                summary
+                    .workspace
+                    .git_branch
+                    .or_else(|| fallback_branch.clone()),
+                summary.title,
+                summary.agent,
+            )
+        })
+        .collect::<Vec<_>>()
+}
+
 fn tile_columns(session_count: usize) -> usize {
     match session_count {
         0 | 1 => 1,
@@ -2029,6 +2175,7 @@ fn current_branch() -> Option<String> {
 mod tests {
     use super::*;
     use alacritty_terminal::vte::ansi::{Color, Rgb};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn normalizes_crlf_without_double_newlines() {
@@ -2080,6 +2227,48 @@ mod tests {
         };
 
         assert_eq!(command_label(&command), "pwsh.exe -NoLogo -NoProfile");
+    }
+
+    #[test]
+    fn ui_settings_persist_to_disk() {
+        let state_dir = test_state_dir("ui-settings");
+        let settings = UiSettings {
+            tile_sessions: true,
+            terminal_font_size: 15.0,
+        };
+
+        save_ui_settings(&state_dir, settings).expect("settings save");
+
+        let loaded = load_ui_settings(&state_dir).expect("settings load");
+        assert_eq!(loaded.tile_sessions, settings.tile_sessions);
+        assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
+        let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
+    fn session_summaries_persist_to_disk() {
+        let state_dir = test_state_dir("sessions");
+        let summary = SessionSummary {
+            id: SessionId::new("shell-1"),
+            title: "shell 1".into(),
+            agent: AgentKind::Shell,
+            status: SessionStatus::Running,
+            workspace: WorkspaceRef {
+                cwd: PathBuf::from("."),
+                git_branch: Some("main".into()),
+            },
+            command: "pwsh.exe -NoLogo -NoProfile".into(),
+            last_activity: "attached".into(),
+            notification: None,
+        };
+
+        save_session_summaries(&state_dir, std::slice::from_ref(&summary)).expect("sessions save");
+
+        assert_eq!(
+            load_session_summaries(&state_dir).expect("sessions load"),
+            vec![summary]
+        );
+        let _ = fs::remove_dir_all(state_dir);
     }
 
     #[test]
@@ -2267,5 +2456,13 @@ mod tests {
 
         assert!(larger_font.columns < default_font.columns);
         assert!(larger_font.rows < default_font.rows);
+    }
+
+    fn test_state_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock is after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("lazyterm-{name}-{suffix}"))
     }
 }

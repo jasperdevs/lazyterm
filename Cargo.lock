@@ -2946,7 +2946,10 @@ dependencies = [
  "gpui",
  "lazyterm-core",
  "lazyterm-pty",
+ "lazyterm-sessions",
  "lazyterm-terminal",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

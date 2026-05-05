@@ -11,7 +11,10 @@ alacritty_terminal.workspace = true
 gpui.workspace = true
 lazyterm-core = { path = "../lazyterm-core" }
 lazyterm-pty = { path = "../lazyterm-pty" }
+lazyterm-sessions = { path = "../lazyterm-sessions" }
 lazyterm-terminal = { path = "../lazyterm-terminal" }
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

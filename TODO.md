@@ -36,15 +36,15 @@
 - [x] Searchable command palette query with Enter-to-run command execution
 - [x] Palette text-input routing that does not leak search text into the active PTY
 - [x] Agent pane commands for Codex, Claude, and OpenCode
+- [x] Persistent UI settings in `%LOCALAPPDATA%/lazyterm/ui-settings.json`
+- [x] Persistent pane manifest in `%LOCALAPPDATA%/lazyterm/sessions.sqlite`
 
 ## Next
 
 - [ ] Add app socket transport for the CLI/API
-- [ ] Replace demo sessions with persisted session state
 - [ ] Add agent pane presets with arguments, working-directory prompts, and health checks
 - [ ] Add real split-pane resize handles
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
-- [ ] Add persistent preferences
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates

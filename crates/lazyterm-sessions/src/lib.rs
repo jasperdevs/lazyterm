@@ -71,6 +71,23 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn replace_all(&mut self, summaries: &[SessionSummary]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("delete from sessions", [])?;
+        {
+            let mut statement = transaction.prepare(
+                "insert into sessions (id, payload) values (?1, ?2)
+                 on conflict(id) do update set payload = excluded.payload",
+            )?;
+            for summary in summaries {
+                let payload = serde_json::to_string(summary)?;
+                statement.execute(params![summary.id.as_str(), payload])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn migrate(&self) -> Result<()> {
         self.connection.execute_batch(
             "create table if not exists sessions (
@@ -144,6 +161,36 @@ mod tests {
         store.save(&updated).expect("updated session saves");
 
         assert_eq!(store.list().expect("sessions list"), vec![updated]);
+    }
+
+    #[test]
+    fn replace_all_removes_stale_sessions() {
+        let mut store = SessionStore::open_memory().expect("store opens");
+        let first = SessionSummary {
+            id: SessionId::new("first"),
+            title: "First".into(),
+            agent: AgentKind::Shell,
+            status: SessionStatus::Running,
+            workspace: WorkspaceRef {
+                cwd: PathBuf::from("."),
+                git_branch: None,
+            },
+            command: "pwsh.exe".into(),
+            last_activity: "first".into(),
+            notification: None,
+        };
+        let second = SessionSummary {
+            id: SessionId::new("second"),
+            title: "Second".into(),
+            ..first.clone()
+        };
+
+        store.save(&first).expect("first saves");
+        store
+            .replace_all(std::slice::from_ref(&second))
+            .expect("replace succeeds");
+
+        assert_eq!(store.list().expect("sessions list"), vec![second]);
     }
 
     #[test]
