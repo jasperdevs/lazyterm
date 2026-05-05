@@ -1,7 +1,7 @@
 use alacritty_terminal::{
     event::{Event as AlacrittyEvent, EventListener},
     grid::{Dimensions, Scroll},
-    term::{cell::Cell, cell::Flags, Config as AlacrittyConfig, Term as AlacrittyTerm},
+    term::{cell::Cell, cell::Flags, Config as AlacrittyConfig, Term as AlacrittyTerm, TermMode},
     vte::ansi::{
         Color as AnsiColor, CursorShape, NamedColor as AnsiNamedColor, Processor as AnsiProcessor,
         Rgb as AnsiRgb,
@@ -808,6 +808,12 @@ impl LazytermApp {
         }
 
         self.active_session = session_index;
+        if self.sessions[session_index].uses_alternate_scroll() && !event.modifiers.shift {
+            let bytes = alternate_scroll_bytes(lines);
+            self.write_bytes_to_session(session_index, &bytes);
+            return true;
+        }
+
         self.sessions[session_index].scroll_display(Scroll::Delta(lines));
         true
     }
@@ -2142,6 +2148,10 @@ impl TerminalSession {
     fn scroll_display(&mut self, scroll: Scroll) {
         self.terminal.scroll_display(scroll);
     }
+
+    fn uses_alternate_scroll(&self) -> bool {
+        self.terminal.uses_alternate_scroll()
+    }
 }
 
 impl TerminalGrid {
@@ -2168,6 +2178,12 @@ impl TerminalGrid {
 
     fn scroll_display(&mut self, scroll: Scroll) {
         self.term.scroll_display(scroll);
+    }
+
+    fn uses_alternate_scroll(&self) -> bool {
+        self.term
+            .mode()
+            .contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
     }
 
     #[cfg(test)]
@@ -2920,6 +2936,15 @@ fn notification_for_status(status: SessionStatus, output: &str) -> Option<String
     }
 }
 
+fn alternate_scroll_bytes(lines: i32) -> Vec<u8> {
+    let command = if lines > 0 { b'A' } else { b'B' };
+    let mut bytes = Vec::with_capacity(lines.unsigned_abs() as usize * 3);
+    for _ in 0..lines.abs() {
+        bytes.extend_from_slice(&[0x1b, b'O', command]);
+    }
+    bytes
+}
+
 fn first_non_empty_line(output: &str) -> Option<&str> {
     output.lines().map(str::trim).find(|line| !line.is_empty())
 }
@@ -3650,6 +3675,22 @@ mod tests {
 
         grid.scroll_display(Scroll::Bottom);
         assert_eq!(grid.display_offset(), 0);
+    }
+
+    #[test]
+    fn alternate_screen_scroll_maps_to_application_arrows() {
+        assert_eq!(alternate_scroll_bytes(2), b"\x1bOA\x1bOA");
+        assert_eq!(alternate_scroll_bytes(-1), b"\x1bOB");
+        assert!(alternate_scroll_bytes(0).is_empty());
+    }
+
+    #[test]
+    fn terminal_grid_detects_alternate_scroll_mode() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+        assert!(!grid.uses_alternate_scroll());
+
+        grid.feed(b"\x1b[?1049h");
+        assert!(grid.uses_alternate_scroll());
     }
 
     #[test]

@@ -58,10 +58,11 @@
 - [x] CLI/API mux controls for split, maximize, restart, and close
 - [x] Native terminal scrollback with mouse wheel and Shift+PageUp/PageDown controls
 - [x] Slop UI cleanup pass: richer vertical tabs, less duplicated status text, and scrollable command palette metadata
+- [x] Alternate-screen wheel input for full-screen terminal apps while preserving normal shell scrollback
 
 ## Next
 
-- [ ] Add mouse reporting for full-screen TUI apps while preserving normal scrollback
+- [ ] Add click/drag mouse reporting for full-screen TUI apps
 - [ ] Extend resize handles beyond two-pane layouts
 - [ ] Add agent pane presets with arguments and working-directory prompts
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
