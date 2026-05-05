@@ -424,7 +424,7 @@ impl LazytermApp {
         let ui_settings = load_ui_settings(&state_dir).unwrap_or(UiSettings {
             tile_sessions: false,
             tile_layout: TileLayout::Grid,
-            rail_width: RailWidth::Default,
+            rail_width: RailWidth::Compact,
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
             split_ratio: DEFAULT_SPLIT_RATIO,
@@ -842,39 +842,10 @@ impl LazytermApp {
 
     fn write_keystroke_to_active_pty(&mut self, keystroke: &Keystroke) -> bool {
         let app_cursor = self.sessions[self.active_session].uses_app_cursor();
-        let bytes = match keystroke.key.as_str() {
-            "enter" => Some(b"\r".as_slice()),
-            "backspace" => Some(b"\x7f".as_slice()),
-            "escape" => Some(b"\x1b".as_slice()),
-            "tab" if keystroke.modifiers.shift => Some(b"\x1b[Z".as_slice()),
-            "tab" => Some(b"\t".as_slice()),
-            "delete" => Some(b"\x1b[3~".as_slice()),
-            "left" => Some(cursor_key_bytes(b'D', app_cursor)),
-            "right" => Some(cursor_key_bytes(b'C', app_cursor)),
-            "up" => Some(cursor_key_bytes(b'A', app_cursor)),
-            "down" => Some(cursor_key_bytes(b'B', app_cursor)),
-            "home" => Some(cursor_key_bytes(b'H', app_cursor)),
-            "end" => Some(cursor_key_bytes(b'F', app_cursor)),
-            "pageup" => Some(b"\x1b[5~".as_slice()),
-            "pagedown" => Some(b"\x1b[6~".as_slice()),
-            "insert" => Some(b"\x1b[2~".as_slice()),
-            "f1" => Some(b"\x1bOP".as_slice()),
-            "f2" => Some(b"\x1bOQ".as_slice()),
-            "f3" => Some(b"\x1bOR".as_slice()),
-            "f4" => Some(b"\x1bOS".as_slice()),
-            "f5" => Some(b"\x1b[15~".as_slice()),
-            "f6" => Some(b"\x1b[17~".as_slice()),
-            "f7" => Some(b"\x1b[18~".as_slice()),
-            "f8" => Some(b"\x1b[19~".as_slice()),
-            "f9" => Some(b"\x1b[20~".as_slice()),
-            "f10" => Some(b"\x1b[21~".as_slice()),
-            "f11" => Some(b"\x1b[23~".as_slice()),
-            "f12" => Some(b"\x1b[24~".as_slice()),
-            _ => None,
-        };
+        let bytes = terminal_key_bytes(keystroke.key.as_str(), keystroke.modifiers, app_cursor);
 
         if let Some(bytes) = bytes {
-            self.write_bytes_to_active_pty(bytes);
+            self.write_bytes_to_active_pty(&bytes);
             return true;
         }
 
@@ -3221,7 +3192,7 @@ fn default_tile_layout() -> TileLayout {
 }
 
 fn default_rail_width() -> RailWidth {
-    RailWidth::Default
+    RailWidth::Compact
 }
 
 fn sidebar_width_for_rail(width: RailWidth) -> f32 {
@@ -3451,6 +3422,68 @@ fn terminal_char_width(font_size: f32) -> f32 {
 
 fn terminal_line_height(font_size: f32) -> f32 {
     TERMINAL_LINE_HEIGHT * (font_size / 12.0)
+}
+
+fn terminal_key_bytes(key: &str, modifiers: gpui::Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
+    let modified = modified_key_code(modifiers);
+
+    match key {
+        "enter" => Some(b"\r".to_vec()),
+        "backspace" if modifiers.control => Some(b"\x17".to_vec()),
+        "backspace" if modifiers.alt => Some(b"\x1b\x7f".to_vec()),
+        "backspace" => Some(b"\x7f".to_vec()),
+        "escape" => Some(b"\x1b".to_vec()),
+        "tab" if modifiers.shift => Some(b"\x1b[Z".to_vec()),
+        "tab" => Some(b"\t".to_vec()),
+        "delete" => {
+            Some(modified_tilde_key_bytes(3, modified).unwrap_or_else(|| b"\x1b[3~".to_vec()))
+        }
+        "left" => Some(cursor_key_bytes(b'D', app_cursor, modified)),
+        "right" => Some(cursor_key_bytes(b'C', app_cursor, modified)),
+        "up" => Some(cursor_key_bytes(b'A', app_cursor, modified)),
+        "down" => Some(cursor_key_bytes(b'B', app_cursor, modified)),
+        "home" => Some(cursor_key_bytes(b'H', app_cursor, modified)),
+        "end" => Some(cursor_key_bytes(b'F', app_cursor, modified)),
+        "pageup" => {
+            Some(modified_tilde_key_bytes(5, modified).unwrap_or_else(|| b"\x1b[5~".to_vec()))
+        }
+        "pagedown" => {
+            Some(modified_tilde_key_bytes(6, modified).unwrap_or_else(|| b"\x1b[6~".to_vec()))
+        }
+        "insert" => {
+            Some(modified_tilde_key_bytes(2, modified).unwrap_or_else(|| b"\x1b[2~".to_vec()))
+        }
+        "f1" => Some(b"\x1bOP".to_vec()),
+        "f2" => Some(b"\x1bOQ".to_vec()),
+        "f3" => Some(b"\x1bOR".to_vec()),
+        "f4" => Some(b"\x1bOS".to_vec()),
+        "f5" => Some(b"\x1b[15~".to_vec()),
+        "f6" => Some(b"\x1b[17~".to_vec()),
+        "f7" => Some(b"\x1b[18~".to_vec()),
+        "f8" => Some(b"\x1b[19~".to_vec()),
+        "f9" => Some(b"\x1b[20~".to_vec()),
+        "f10" => Some(b"\x1b[21~".to_vec()),
+        "f11" => Some(b"\x1b[23~".to_vec()),
+        "f12" => Some(b"\x1b[24~".to_vec()),
+        _ => None,
+    }
+}
+
+fn modified_key_code(modifiers: gpui::Modifiers) -> Option<u8> {
+    match (modifiers.shift, modifiers.alt, modifiers.control) {
+        (false, false, false) => None,
+        (true, false, false) => Some(2),
+        (false, true, false) => Some(3),
+        (true, true, false) => Some(4),
+        (false, false, true) => Some(5),
+        (true, false, true) => Some(6),
+        (false, true, true) => Some(7),
+        (true, true, true) => Some(8),
+    }
+}
+
+fn modified_tilde_key_bytes(prefix: u8, modified: Option<u8>) -> Option<Vec<u8>> {
+    modified.map(|code| format!("\x1b[{prefix};{code}~").into_bytes())
 }
 
 fn control_byte_for_key(key: &str) -> Option<u8> {
@@ -3694,21 +3727,25 @@ fn paste_bytes_for_terminal(text: &str, bracketed: bool) -> Vec<u8> {
     text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
 }
 
-fn cursor_key_bytes(key: u8, app_cursor: bool) -> &'static [u8] {
+fn cursor_key_bytes(key: u8, app_cursor: bool, modified: Option<u8>) -> Vec<u8> {
+    if let Some(code) = modified {
+        return format!("\x1b[1;{code}{}", key as char).into_bytes();
+    }
+
     match (key, app_cursor) {
-        (b'A', true) => b"\x1bOA",
-        (b'A', false) => b"\x1b[A",
-        (b'B', true) => b"\x1bOB",
-        (b'B', false) => b"\x1b[B",
-        (b'C', true) => b"\x1bOC",
-        (b'C', false) => b"\x1b[C",
-        (b'D', true) => b"\x1bOD",
-        (b'D', false) => b"\x1b[D",
-        (b'H', true) => b"\x1bOH",
-        (b'H', false) => b"\x1b[H",
-        (b'F', true) => b"\x1bOF",
-        (b'F', false) => b"\x1b[F",
-        _ => b"",
+        (b'A', true) => b"\x1bOA".to_vec(),
+        (b'A', false) => b"\x1b[A".to_vec(),
+        (b'B', true) => b"\x1bOB".to_vec(),
+        (b'B', false) => b"\x1b[B".to_vec(),
+        (b'C', true) => b"\x1bOC".to_vec(),
+        (b'C', false) => b"\x1b[C".to_vec(),
+        (b'D', true) => b"\x1bOD".to_vec(),
+        (b'D', false) => b"\x1b[D".to_vec(),
+        (b'H', true) => b"\x1bOH".to_vec(),
+        (b'H', false) => b"\x1b[H".to_vec(),
+        (b'F', true) => b"\x1bOF".to_vec(),
+        (b'F', false) => b"\x1b[F".to_vec(),
+        _ => Vec::new(),
     }
 }
 
@@ -4342,6 +4379,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_ui_settings_default_to_compact_rail() {
+        let state_dir = test_state_dir("legacy-ui-settings");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        fs::write(
+            state_dir.join("ui-settings.json"),
+            r#"{
+  "tile_sessions": false,
+  "tile_layout": "Grid",
+  "terminal_font_size": 12.0,
+  "terminal_padding": 14.0,
+  "split_ratio": 0.5,
+  "pane_ratios": []
+}"#,
+        )
+        .expect("write legacy settings");
+
+        let loaded = load_ui_settings(&state_dir).expect("settings load");
+
+        assert_eq!(loaded.rail_width, RailWidth::Compact);
+        let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
     fn session_summaries_persist_to_disk() {
         let state_dir = test_state_dir("sessions");
         let summary = SessionSummary {
@@ -4607,14 +4667,62 @@ mod tests {
 
     #[test]
     fn cursor_keys_follow_application_cursor_mode() {
-        assert_eq!(cursor_key_bytes(b'A', false), b"\x1b[A");
-        assert_eq!(cursor_key_bytes(b'A', true), b"\x1bOA");
-        assert_eq!(cursor_key_bytes(b'D', false), b"\x1b[D");
-        assert_eq!(cursor_key_bytes(b'D', true), b"\x1bOD");
-        assert_eq!(cursor_key_bytes(b'H', false), b"\x1b[H");
-        assert_eq!(cursor_key_bytes(b'H', true), b"\x1bOH");
-        assert_eq!(cursor_key_bytes(b'F', false), b"\x1b[F");
-        assert_eq!(cursor_key_bytes(b'F', true), b"\x1bOF");
+        assert_eq!(cursor_key_bytes(b'A', false, None), b"\x1b[A");
+        assert_eq!(cursor_key_bytes(b'A', true, None), b"\x1bOA");
+        assert_eq!(cursor_key_bytes(b'D', false, None), b"\x1b[D");
+        assert_eq!(cursor_key_bytes(b'D', true, None), b"\x1bOD");
+        assert_eq!(cursor_key_bytes(b'H', false, None), b"\x1b[H");
+        assert_eq!(cursor_key_bytes(b'H', true, None), b"\x1bOH");
+        assert_eq!(cursor_key_bytes(b'F', false, None), b"\x1b[F");
+        assert_eq!(cursor_key_bytes(b'F', true, None), b"\x1bOF");
+    }
+
+    #[test]
+    fn modified_terminal_keys_use_xterm_sequences() {
+        assert_eq!(
+            terminal_key_bytes(
+                "left",
+                gpui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            Some(b"\x1b[1;5D".to_vec())
+        );
+        assert_eq!(
+            terminal_key_bytes(
+                "right",
+                gpui::Modifiers {
+                    alt: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            Some(b"\x1b[1;3C".to_vec())
+        );
+        assert_eq!(
+            terminal_key_bytes(
+                "delete",
+                gpui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            Some(b"\x1b[3;5~".to_vec())
+        );
+        assert_eq!(
+            terminal_key_bytes(
+                "backspace",
+                gpui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            Some(b"\x17".to_vec())
+        );
     }
 
     #[test]
