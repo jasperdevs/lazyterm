@@ -57,6 +57,7 @@ const DEFAULT_TERMINAL_PADDING: f32 = 16.0;
 const DEFAULT_SPLIT_RATIO: f32 = 0.5;
 const MIN_SPLIT_RATIO: f32 = 0.2;
 const MAX_SPLIT_RATIO: f32 = 0.8;
+const MIN_PANE_RATIO: f32 = 0.08;
 const RESIZE_HANDLE_SIZE: f32 = 6.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
@@ -82,29 +83,31 @@ pub struct LazytermApp {
     resize_drag: Option<ResizeDrag>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct UiSettings {
     tile_sessions: bool,
     tile_layout: TileLayout,
     terminal_font_size: f32,
     terminal_padding: f32,
     split_ratio: f32,
+    pane_ratios: Vec<f32>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct ResizeDrag {
     orientation: SplitOrientation,
+    handle_index: usize,
     start_position: Point<Pixels>,
-    start_ratio: f32,
+    start_ratios: Vec<f32>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct TerminalSizing {
     viewport: Size<Pixels>,
     font_size: f32,
     padding: f32,
     tile_layout: TileLayout,
-    split_ratio: f32,
+    pane_ratios: Vec<f32>,
     session_count: usize,
     tiled: bool,
 }
@@ -164,6 +167,7 @@ impl From<PersistedUiSettings> for UiSettings {
             terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
             terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
             split_ratio: value.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO),
+            pane_ratios: value.pane_ratios,
         }
     }
 }
@@ -176,11 +180,12 @@ impl From<UiSettings> for PersistedUiSettings {
             terminal_font_size: value.terminal_font_size,
             terminal_padding: value.terminal_padding,
             split_ratio: value.split_ratio,
+            pane_ratios: value.pane_ratios,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct PersistedUiSettings {
     tile_sessions: bool,
     #[serde(default = "default_tile_layout")]
@@ -190,6 +195,8 @@ struct PersistedUiSettings {
     terminal_padding: f32,
     #[serde(default = "default_split_ratio")]
     split_ratio: f32,
+    #[serde(default)]
+    pane_ratios: Vec<f32>,
 }
 
 struct TerminalSession {
@@ -364,6 +371,7 @@ impl LazytermApp {
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
             split_ratio: DEFAULT_SPLIT_RATIO,
+            pane_ratios: Vec::new(),
         });
         let sessions = load_session_summaries(&state_dir)
             .map(|summaries| spawn_persisted_sessions(summaries, branch.clone()))
@@ -598,20 +606,9 @@ impl LazytermApp {
     }
 
     fn resize_sessions(&mut self, viewport: Size<Pixels>) {
-        let session_count = self.sessions.len();
+        let sizing = self.terminal_sizing(viewport);
         for (index, session) in self.sessions.iter_mut().enumerate() {
-            let size = terminal_size_for_session(
-                TerminalSizing {
-                    viewport,
-                    font_size: self.ui_settings.terminal_font_size,
-                    padding: self.ui_settings.terminal_padding,
-                    tile_layout: self.ui_settings.tile_layout,
-                    split_ratio: self.ui_settings.split_ratio,
-                    session_count,
-                    tiled: self.ui_settings.tile_sessions,
-                },
-                index,
-            );
+            let size = terminal_size_for_session(sizing.clone(), index);
             session.resize(size);
         }
     }
@@ -983,7 +980,7 @@ impl LazytermApp {
             font_size: self.ui_settings.terminal_font_size,
             padding: self.ui_settings.terminal_padding,
             tile_layout: self.ui_settings.tile_layout,
-            split_ratio: self.ui_settings.split_ratio,
+            pane_ratios: self.ui_settings.pane_ratios.clone(),
             session_count: self.sessions.len(),
             tiled: self.ui_settings.tile_sessions,
         }
@@ -1227,29 +1224,57 @@ impl LazytermApp {
         self.persist_ui_settings();
     }
 
-    fn start_resize_drag(&mut self, orientation: SplitOrientation, position: Point<Pixels>) {
+    fn start_resize_drag(
+        &mut self,
+        orientation: SplitOrientation,
+        handle_index: usize,
+        position: Point<Pixels>,
+    ) {
         self.resize_drag = Some(ResizeDrag {
             orientation,
+            handle_index,
             start_position: position,
-            start_ratio: self.ui_settings.split_ratio,
+            start_ratios: pane_ratios_for_count(&self.ui_settings, self.sessions.len()),
         });
     }
 
     fn update_resize_drag(&mut self, position: Point<Pixels>, viewport: Size<Pixels>) -> bool {
-        let Some(drag) = self.resize_drag else {
+        let Some(drag) = self.resize_drag.as_ref() else {
             return false;
         };
 
+        let pane_count = self.sessions.len();
+        if pane_count < 2 || drag.handle_index + 1 >= pane_count {
+            return false;
+        }
+
+        let handle_space = RESIZE_HANDLE_SIZE * (pane_count.saturating_sub(1) as f32);
         let available = match drag.orientation {
-            SplitOrientation::Columns => (viewport.width.as_f32() - SIDEBAR_WIDTH).max(1.0),
-            SplitOrientation::Rows => (viewport.height.as_f32() - TITLEBAR_HEIGHT).max(1.0),
+            SplitOrientation::Columns => {
+                (viewport.width.as_f32() - SIDEBAR_WIDTH - handle_space).max(1.0)
+            }
+            SplitOrientation::Rows => {
+                (viewport.height.as_f32() - TITLEBAR_HEIGHT - handle_space).max(1.0)
+            }
         };
         let delta = match drag.orientation {
             SplitOrientation::Columns => position.x.as_f32() - drag.start_position.x.as_f32(),
             SplitOrientation::Rows => position.y.as_f32() - drag.start_position.y.as_f32(),
         };
-        self.ui_settings.split_ratio =
-            (drag.start_ratio + (delta / available)).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+        let mut ratios = normalize_pane_ratios(&drag.start_ratios, pane_count);
+        let left = drag.handle_index;
+        let right = left + 1;
+        let pair_total = ratios[left] + ratios[right];
+        let min_ratio = MIN_PANE_RATIO.min(pair_total / 2.0);
+        let next_left =
+            (ratios[left] + (delta / available)).clamp(min_ratio, pair_total - min_ratio);
+        ratios[left] = next_left;
+        ratios[right] = pair_total - next_left;
+        self.ui_settings.pane_ratios = normalize_pane_ratios(&ratios, pane_count);
+        if pane_count == 2 {
+            self.ui_settings.split_ratio =
+                self.ui_settings.pane_ratios[0].clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+        }
         true
     }
 
@@ -1509,7 +1534,7 @@ impl LazytermApp {
     }
 
     fn persist_ui_settings(&self) {
-        if let Err(error) = save_ui_settings(&self.state_dir, self.ui_settings) {
+        if let Err(error) = save_ui_settings(&self.state_dir, self.ui_settings.clone()) {
             eprintln!("lazyterm: failed to save ui settings: {error}");
         }
     }
@@ -1774,16 +1799,14 @@ impl LazytermApp {
     }
 
     fn render_tiled_terminals(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.sessions.len() == 2 {
-            match self.ui_settings.tile_layout {
-                TileLayout::Columns => {
-                    return self.render_two_pane_split(SplitOrientation::Columns, cx);
-                }
-                TileLayout::Rows => {
-                    return self.render_two_pane_split(SplitOrientation::Rows, cx);
-                }
-                TileLayout::Grid => {}
+        match self.ui_settings.tile_layout {
+            TileLayout::Columns if self.sessions.len() >= 2 => {
+                return self.render_linear_split(SplitOrientation::Columns, cx);
             }
+            TileLayout::Rows if self.sessions.len() >= 2 => {
+                return self.render_linear_split(SplitOrientation::Rows, cx);
+            }
+            TileLayout::Grid | TileLayout::Columns | TileLayout::Rows => {}
         }
 
         let columns = tile_columns_for_layout(self.sessions.len(), self.ui_settings.tile_layout);
@@ -1802,15 +1825,13 @@ impl LazytermApp {
         tiles
     }
 
-    fn render_two_pane_split(&self, orientation: SplitOrientation, cx: &mut Context<Self>) -> Div {
-        let first_basis = relative(self.ui_settings.split_ratio);
-        let second_basis = relative(1.0 - self.ui_settings.split_ratio);
+    fn render_linear_split(&self, orientation: SplitOrientation, cx: &mut Context<Self>) -> Div {
         let cursor = match orientation {
             SplitOrientation::Columns => CursorStyle::ResizeLeftRight,
             SplitOrientation::Rows => CursorStyle::ResizeUpDown,
         };
-
-        div()
+        let ratios = pane_ratios_for_count(&self.ui_settings, self.sessions.len());
+        let mut split = div()
             .flex()
             .when(orientation == SplitOrientation::Columns, |this| {
                 this.flex_row()
@@ -1820,31 +1841,31 @@ impl LazytermApp {
             })
             .flex_1()
             .h_full()
-            .bg(rgb(BG))
-            .child(
+            .bg(rgb(BG));
+
+        for (index, ratio) in ratios.iter().copied().enumerate().take(self.sessions.len()) {
+            split = split.child(
                 div()
                     .flex()
                     .flex_col()
                     .h_full()
-                    .flex_basis(first_basis)
+                    .flex_basis(relative(ratio))
                     .overflow_hidden()
-                    .child(self.render_terminal_tile(0, cx)),
-            )
-            .child(self.render_resize_handle(orientation, cursor, cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .h_full()
-                    .flex_basis(second_basis)
-                    .overflow_hidden()
-                    .child(self.render_terminal_tile(1, cx)),
-            )
+                    .child(self.render_terminal_tile(index, cx)),
+            );
+
+            if index + 1 < self.sessions.len() {
+                split = split.child(self.render_resize_handle(orientation, index, cursor, cx));
+            }
+        }
+
+        split
     }
 
     fn render_resize_handle(
         &self,
         orientation: SplitOrientation,
+        handle_index: usize,
         cursor: CursorStyle,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1859,11 +1880,11 @@ impl LazytermApp {
             .bg(rgb(BORDER))
             .hover(|this| this.bg(rgb(TEXT_FAINT)))
             .cursor(cursor)
-            .id("pane-resize-handle")
+            .id(format!("pane-resize-handle-{handle_index}"))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.start_resize_drag(orientation, event.position);
+                    this.start_resize_drag(orientation, handle_index, event.position);
                     this.focus_terminal(window, cx);
                     cx.notify();
                 }),
@@ -2913,26 +2934,28 @@ fn terminal_size_for_viewport(
 }
 
 fn terminal_size_for_session(sizing: TerminalSizing, session_index: usize) -> TerminalSize {
-    if sizing.tiled && sizing.session_count == 2 {
+    if sizing.tiled && sizing.session_count >= 2 {
         match sizing.tile_layout {
             TileLayout::Columns => {
+                let ratios = normalize_pane_ratios(&sizing.pane_ratios, sizing.session_count);
                 return terminal_size_for_split_session(
                     sizing.viewport,
                     sizing.font_size,
                     sizing.padding,
-                    sizing.split_ratio,
+                    ratios[session_index.min(sizing.session_count - 1)],
                     SplitOrientation::Columns,
-                    session_index,
+                    sizing.session_count,
                 );
             }
             TileLayout::Rows => {
+                let ratios = normalize_pane_ratios(&sizing.pane_ratios, sizing.session_count);
                 return terminal_size_for_split_session(
                     sizing.viewport,
                     sizing.font_size,
                     sizing.padding,
-                    sizing.split_ratio,
+                    ratios[session_index.min(sizing.session_count - 1)],
                     SplitOrientation::Rows,
-                    session_index,
+                    sizing.session_count,
                 );
             }
             TileLayout::Grid => {}
@@ -2953,40 +2976,34 @@ fn terminal_content_bounds_for_session(
     sizing: TerminalSizing,
     session_index: usize,
 ) -> TerminalContentBounds {
-    let size = terminal_size_for_session(sizing, session_index);
+    let size = terminal_size_for_session(sizing.clone(), session_index);
     let cell_width = terminal_char_width(sizing.font_size);
     let line_height = terminal_line_height(sizing.font_size);
     let content_width = (sizing.viewport.width.as_f32() - SIDEBAR_WIDTH).max(1.0);
     let content_height = (sizing.viewport.height.as_f32() - TITLEBAR_HEIGHT).max(1.0);
     let padding = sizing.padding;
 
-    let (pane_x, pane_y) = if sizing.tiled && sizing.session_count == 2 {
+    let (pane_x, pane_y) = if sizing.tiled && sizing.session_count >= 2 {
         match sizing.tile_layout {
             TileLayout::Columns => {
-                let split_width = (content_width - RESIZE_HANDLE_SIZE).max(1.0);
-                let first_width =
-                    split_width * sizing.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
-                if session_index == 0 {
-                    (SIDEBAR_WIDTH, TITLEBAR_HEIGHT)
-                } else {
-                    (
-                        SIDEBAR_WIDTH + first_width + RESIZE_HANDLE_SIZE,
-                        TITLEBAR_HEIGHT,
-                    )
-                }
+                let ratios = normalize_pane_ratios(&sizing.pane_ratios, sizing.session_count);
+                let pane_index = session_index.min(sizing.session_count - 1);
+                let split_width = (content_width
+                    - RESIZE_HANDLE_SIZE * (sizing.session_count - 1) as f32)
+                    .max(1.0);
+                let offset = ratios.iter().take(pane_index).sum::<f32>() * split_width
+                    + RESIZE_HANDLE_SIZE * pane_index as f32;
+                (SIDEBAR_WIDTH + offset, TITLEBAR_HEIGHT)
             }
             TileLayout::Rows => {
-                let split_height = (content_height - RESIZE_HANDLE_SIZE).max(1.0);
-                let first_height =
-                    split_height * sizing.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
-                if session_index == 0 {
-                    (SIDEBAR_WIDTH, TITLEBAR_HEIGHT)
-                } else {
-                    (
-                        SIDEBAR_WIDTH,
-                        TITLEBAR_HEIGHT + first_height + RESIZE_HANDLE_SIZE,
-                    )
-                }
+                let ratios = normalize_pane_ratios(&sizing.pane_ratios, sizing.session_count);
+                let pane_index = session_index.min(sizing.session_count - 1);
+                let split_height = (content_height
+                    - RESIZE_HANDLE_SIZE * (sizing.session_count - 1) as f32)
+                    .max(1.0);
+                let offset = ratios.iter().take(pane_index).sum::<f32>() * split_height
+                    + RESIZE_HANDLE_SIZE * pane_index as f32;
+                (SIDEBAR_WIDTH, TITLEBAR_HEIGHT + offset)
             }
             TileLayout::Grid => {
                 grid_pane_origin(sizing, session_index, content_width, content_height)
@@ -3038,26 +3055,22 @@ fn terminal_size_for_split_session(
     viewport: Size<Pixels>,
     terminal_font_size: f32,
     terminal_padding: f32,
-    split_ratio: f32,
+    ratio: f32,
     orientation: SplitOrientation,
-    session_index: usize,
+    pane_count: usize,
 ) -> TerminalSize {
-    let ratio = if session_index == 0 {
-        split_ratio
-    } else {
-        1.0 - split_ratio
-    }
-    .clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+    let ratio = ratio.clamp(MIN_PANE_RATIO, 1.0);
+    let handle_space = RESIZE_HANDLE_SIZE * pane_count.saturating_sub(1) as f32;
     let width = viewport.width.as_f32();
     let height = viewport.height.as_f32();
     let (pane_width, pane_height) = match orientation {
         SplitOrientation::Columns => (
-            ((width - SIDEBAR_WIDTH - RESIZE_HANDLE_SIZE).max(1.0) * ratio).max(160.0),
+            ((width - SIDEBAR_WIDTH - handle_space).max(1.0) * ratio).max(160.0),
             (height - TITLEBAR_HEIGHT).max(1.0),
         ),
         SplitOrientation::Rows => (
             (width - SIDEBAR_WIDTH).max(160.0),
-            ((height - TITLEBAR_HEIGHT - RESIZE_HANDLE_SIZE).max(1.0) * ratio).max(96.0),
+            ((height - TITLEBAR_HEIGHT - handle_space).max(1.0) * ratio).max(96.0),
         ),
     };
     let terminal_width = (pane_width - (terminal_padding * 2.0)).max(160.0);
@@ -3253,6 +3266,39 @@ fn tile_columns_for_layout(session_count: usize, layout: TileLayout) -> usize {
         TileLayout::Columns => session_count.max(1),
         TileLayout::Rows => 1,
     }
+}
+
+fn pane_ratios_for_count(settings: &UiSettings, pane_count: usize) -> Vec<f32> {
+    if pane_count == 2 && settings.pane_ratios.len() != 2 {
+        return normalize_pane_ratios(&[settings.split_ratio, 1.0 - settings.split_ratio], 2);
+    }
+
+    normalize_pane_ratios(&settings.pane_ratios, pane_count)
+}
+
+fn normalize_pane_ratios(ratios: &[f32], pane_count: usize) -> Vec<f32> {
+    if pane_count == 0 {
+        return Vec::new();
+    }
+
+    if ratios.len() != pane_count {
+        return vec![1.0 / pane_count as f32; pane_count];
+    }
+
+    let mut normalized = ratios
+        .iter()
+        .map(|ratio| ratio.max(MIN_PANE_RATIO))
+        .collect::<Vec<_>>();
+    let total = normalized.iter().sum::<f32>();
+    if total <= f32::EPSILON {
+        return vec![1.0 / pane_count as f32; pane_count];
+    }
+
+    for ratio in &mut normalized {
+        *ratio /= total;
+    }
+
+    normalized
 }
 
 fn directional_session_index(
@@ -4146,9 +4192,10 @@ mod tests {
             terminal_font_size: 15.0,
             terminal_padding: 22.0,
             split_ratio: 0.65,
+            pane_ratios: vec![0.65, 0.35],
         };
 
-        save_ui_settings(&state_dir, settings).expect("settings save");
+        save_ui_settings(&state_dir, settings.clone()).expect("settings save");
 
         let loaded = load_ui_settings(&state_dir).expect("settings load");
         assert_eq!(loaded.tile_sessions, settings.tile_sessions);
@@ -4156,6 +4203,7 @@ mod tests {
         assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
         assert_eq!(loaded.terminal_padding, settings.terminal_padding);
         assert_eq!(loaded.split_ratio, settings.split_ratio);
+        assert_eq!(loaded.pane_ratios, settings.pane_ratios);
         let _ = fs::remove_dir_all(state_dir);
     }
 
@@ -4280,6 +4328,15 @@ mod tests {
     }
 
     #[test]
+    fn pane_ratios_normalize_for_dynamic_pane_counts() {
+        assert_eq!(normalize_pane_ratios(&[], 3), vec![1.0 / 3.0; 3]);
+        assert_eq!(
+            normalize_pane_ratios(&[2.0, 1.0], 2),
+            vec![2.0 / 3.0, 1.0 / 3.0]
+        );
+    }
+
+    #[test]
     fn terminal_size_tracks_tile_layout() {
         let viewport = Size {
             width: px(1180.0),
@@ -4317,11 +4374,11 @@ mod tests {
             font_size: 12.0,
             padding: DEFAULT_TERMINAL_PADDING,
             tile_layout: TileLayout::Columns,
-            split_ratio: 0.7,
+            pane_ratios: vec![0.7, 0.3],
             session_count: 2,
             tiled: true,
         };
-        let first = terminal_size_for_session(sizing, 0);
+        let first = terminal_size_for_session(sizing.clone(), 0);
         let second = terminal_size_for_session(sizing, 1);
 
         assert!(first.columns > second.columns);
@@ -4478,12 +4535,12 @@ mod tests {
             font_size: 12.0,
             padding: DEFAULT_TERMINAL_PADDING,
             tile_layout: TileLayout::Columns,
-            split_ratio: 0.7,
+            pane_ratios: vec![0.7, 0.3],
             session_count: 2,
             tiled: true,
         };
 
-        let first = terminal_content_bounds_for_session(sizing, 0);
+        let first = terminal_content_bounds_for_session(sizing.clone(), 0);
         let second = terminal_content_bounds_for_session(sizing, 1);
 
         assert_eq!(first.origin.x, px(SIDEBAR_WIDTH + DEFAULT_TERMINAL_PADDING));
