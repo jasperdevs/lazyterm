@@ -746,6 +746,7 @@ impl LazytermApp {
     }
 
     fn write_keystroke_to_active_pty(&mut self, keystroke: &Keystroke) -> bool {
+        let app_cursor = self.sessions[self.active_session].uses_app_cursor();
         let bytes = match keystroke.key.as_str() {
             "enter" => Some(b"\r".as_slice()),
             "backspace" => Some(b"\x7f".as_slice()),
@@ -753,12 +754,12 @@ impl LazytermApp {
             "tab" if keystroke.modifiers.shift => Some(b"\x1b[Z".as_slice()),
             "tab" => Some(b"\t".as_slice()),
             "delete" => Some(b"\x1b[3~".as_slice()),
-            "left" => Some(b"\x1b[D".as_slice()),
-            "right" => Some(b"\x1b[C".as_slice()),
-            "up" => Some(b"\x1b[A".as_slice()),
-            "down" => Some(b"\x1b[B".as_slice()),
-            "home" => Some(b"\x1b[H".as_slice()),
-            "end" => Some(b"\x1b[F".as_slice()),
+            "left" => Some(cursor_key_bytes(b'D', app_cursor)),
+            "right" => Some(cursor_key_bytes(b'C', app_cursor)),
+            "up" => Some(cursor_key_bytes(b'A', app_cursor)),
+            "down" => Some(cursor_key_bytes(b'B', app_cursor)),
+            "home" => Some(cursor_key_bytes(b'H', app_cursor)),
+            "end" => Some(cursor_key_bytes(b'F', app_cursor)),
             "pageup" => Some(b"\x1b[5~".as_slice()),
             "pagedown" => Some(b"\x1b[6~".as_slice()),
             "insert" => Some(b"\x1b[2~".as_slice()),
@@ -2182,6 +2183,10 @@ impl TerminalSession {
     fn uses_bracketed_paste(&self) -> bool {
         self.terminal.uses_bracketed_paste()
     }
+
+    fn uses_app_cursor(&self) -> bool {
+        self.terminal.uses_app_cursor()
+    }
 }
 
 impl TerminalGrid {
@@ -2218,6 +2223,10 @@ impl TerminalGrid {
 
     fn uses_bracketed_paste(&self) -> bool {
         self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    fn uses_app_cursor(&self) -> bool {
+        self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
     #[cfg(test)]
@@ -2986,6 +2995,24 @@ fn paste_bytes_for_terminal(text: &str, bracketed: bool) -> Vec<u8> {
     }
 
     text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+}
+
+fn cursor_key_bytes(key: u8, app_cursor: bool) -> &'static [u8] {
+    match (key, app_cursor) {
+        (b'A', true) => b"\x1bOA",
+        (b'A', false) => b"\x1b[A",
+        (b'B', true) => b"\x1bOB",
+        (b'B', false) => b"\x1b[B",
+        (b'C', true) => b"\x1bOC",
+        (b'C', false) => b"\x1b[C",
+        (b'D', true) => b"\x1bOD",
+        (b'D', false) => b"\x1b[D",
+        (b'H', true) => b"\x1bOH",
+        (b'H', false) => b"\x1b[H",
+        (b'F', true) => b"\x1bOF",
+        (b'F', false) => b"\x1b[F",
+        _ => b"",
+    }
 }
 
 fn first_non_empty_line(output: &str) -> Option<&str> {
@@ -3762,6 +3789,30 @@ mod tests {
 
         grid.feed(b"\x1b[?2004l");
         assert!(!grid.uses_bracketed_paste());
+    }
+
+    #[test]
+    fn cursor_keys_follow_application_cursor_mode() {
+        assert_eq!(cursor_key_bytes(b'A', false), b"\x1b[A");
+        assert_eq!(cursor_key_bytes(b'A', true), b"\x1bOA");
+        assert_eq!(cursor_key_bytes(b'D', false), b"\x1b[D");
+        assert_eq!(cursor_key_bytes(b'D', true), b"\x1bOD");
+        assert_eq!(cursor_key_bytes(b'H', false), b"\x1b[H");
+        assert_eq!(cursor_key_bytes(b'H', true), b"\x1bOH");
+        assert_eq!(cursor_key_bytes(b'F', false), b"\x1b[F");
+        assert_eq!(cursor_key_bytes(b'F', true), b"\x1bOF");
+    }
+
+    #[test]
+    fn terminal_grid_detects_application_cursor_mode() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+        assert!(!grid.uses_app_cursor());
+
+        grid.feed(b"\x1b[?1h");
+        assert!(grid.uses_app_cursor());
+
+        grid.feed(b"\x1b[?1l");
+        assert!(!grid.uses_app_cursor());
     }
 
     #[test]
