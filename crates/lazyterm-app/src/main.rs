@@ -57,6 +57,7 @@ fn main() {
                         }),
                         window_background: WindowBackgroundAppearance::Transparent,
                         window_decorations: Some(WindowDecorations::Client),
+                        app_id: Some("dev.jasper.lazyterm".into()),
                         window_min_size: Some(size(px(820.0), px(520.0))),
                         ..Default::default()
                     },
