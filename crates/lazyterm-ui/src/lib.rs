@@ -48,8 +48,7 @@ const STATUSLINE_HEIGHT: f32 = 24.0;
 const SIDEBAR_WIDTH: f32 = 58.0;
 const COMMAND_PALETTE_WIDTH: f32 = 360.0;
 const COMMAND_PALETTE_TOP: f32 = TITLEBAR_HEIGHT + 10.0;
-const TERMINAL_X_PADDING: f32 = 20.0;
-const TERMINAL_Y_PADDING: f32 = 16.0;
+const DEFAULT_TERMINAL_PADDING: f32 = 16.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
 const TAB_HEIGHT: f32 = 42.0;
@@ -75,6 +74,7 @@ pub struct LazytermApp {
 struct UiSettings {
     tile_sessions: bool,
     terminal_font_size: f32,
+    terminal_padding: f32,
 }
 
 impl From<PersistedUiSettings> for UiSettings {
@@ -82,6 +82,7 @@ impl From<PersistedUiSettings> for UiSettings {
         Self {
             tile_sessions: value.tile_sessions,
             terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
+            terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
         }
     }
 }
@@ -91,6 +92,7 @@ impl From<UiSettings> for PersistedUiSettings {
         Self {
             tile_sessions: value.tile_sessions,
             terminal_font_size: value.terminal_font_size,
+            terminal_padding: value.terminal_padding,
         }
     }
 }
@@ -99,6 +101,8 @@ impl From<UiSettings> for PersistedUiSettings {
 struct PersistedUiSettings {
     tile_sessions: bool,
     terminal_font_size: f32,
+    #[serde(default = "default_terminal_padding")]
+    terminal_padding: f32,
 }
 
 struct TerminalSession {
@@ -211,6 +215,9 @@ enum CommandKind {
     CopyTranscript,
     Paste,
     MaximizePane,
+    DensityCompact,
+    DensityDefault,
+    DensityRoomy,
     CompactFont,
     DefaultFont,
     FontDown,
@@ -234,6 +241,7 @@ impl LazytermApp {
         let ui_settings = load_ui_settings(&state_dir).unwrap_or(UiSettings {
             tile_sessions: false,
             terminal_font_size: 12.0,
+            terminal_padding: DEFAULT_TERMINAL_PADDING,
         });
         let sessions = load_session_summaries(&state_dir)
             .map(|summaries| spawn_persisted_sessions(summaries, branch.clone()))
@@ -377,6 +385,7 @@ impl LazytermApp {
         let size = terminal_size_for_viewport(
             viewport,
             self.ui_settings.terminal_font_size,
+            self.ui_settings.terminal_padding,
             self.sessions.len(),
             self.ui_settings.tile_sessions,
         );
@@ -780,6 +789,12 @@ impl LazytermApp {
         self.persist_ui_settings();
     }
 
+    fn set_density(&mut self, font_size: f32, padding: f32) {
+        self.ui_settings.terminal_font_size = font_size.clamp(10.0, 16.0);
+        self.ui_settings.terminal_padding = padding.clamp(8.0, 24.0);
+        self.persist_ui_settings();
+    }
+
     fn toggle_tile_sessions(&mut self) {
         self.ui_settings.tile_sessions = !self.ui_settings.tile_sessions;
         self.persist_ui_settings();
@@ -814,6 +829,9 @@ impl LazytermApp {
             CommandKind::CopyTranscript => self.copy_active_transcript(cx),
             CommandKind::Paste => self.paste_clipboard(cx),
             CommandKind::MaximizePane => self.maximize_active_terminal(),
+            CommandKind::DensityCompact => self.set_density(11.0, 10.0),
+            CommandKind::DensityDefault => self.set_density(12.0, DEFAULT_TERMINAL_PADDING),
+            CommandKind::DensityRoomy => self.set_density(13.0, 22.0),
             CommandKind::CompactFont => self.set_font_size(11.0),
             CommandKind::DefaultFont => self.set_font_size(12.0),
             CommandKind::FontDown => self.adjust_font_size(-1.0),
@@ -923,6 +941,21 @@ impl LazytermApp {
                 kind: CommandKind::Paste,
                 label: "paste",
                 shortcut: "ctrl+shift+v",
+            },
+            CommandItem {
+                kind: CommandKind::DensityCompact,
+                label: "density compact",
+                shortcut: "layout",
+            },
+            CommandItem {
+                kind: CommandKind::DensityDefault,
+                label: "density default",
+                shortcut: "layout",
+            },
+            CommandItem {
+                kind: CommandKind::DensityRoomy,
+                label: "density roomy",
+                shortcut: "layout",
             },
             CommandItem {
                 kind: CommandKind::CompactFont,
@@ -1285,8 +1318,8 @@ impl LazytermApp {
             .child(
                 div()
                     .flex_1()
-                    .px(px(TERMINAL_X_PADDING))
-                    .py(px(TERMINAL_Y_PADDING))
+                    .px(px(self.ui_settings.terminal_padding))
+                    .py(px(self.ui_settings.terminal_padding))
                     .font_family("JetBrains Mono")
                     .text_size(px(self.ui_settings.terminal_font_size))
                     .line_height(px(terminal_line_height(
@@ -1342,6 +1375,10 @@ impl LazytermApp {
                     .child(SharedString::from(format!(
                         "{:.0}px",
                         self.ui_settings.terminal_font_size
+                    )))
+                    .child(SharedString::from(format!(
+                        "{:.0}px pad",
+                        self.ui_settings.terminal_padding
                     ))),
             )
     }
@@ -2105,6 +2142,7 @@ impl Render for LazytermApp {
 fn terminal_size_for_viewport(
     viewport: Size<Pixels>,
     terminal_font_size: f32,
+    terminal_padding: f32,
     session_count: usize,
     tiled: bool,
 ) -> TerminalSize {
@@ -2114,11 +2152,11 @@ fn terminal_size_for_viewport(
     let tile_columns = tile_columns(panes) as f32;
     let tile_rows = ((panes as f32) / tile_columns).ceil().max(1.0);
     let terminal_width =
-        ((width - SIDEBAR_WIDTH) / tile_columns - (TERMINAL_X_PADDING * 2.0)).max(160.0);
+        ((width - SIDEBAR_WIDTH) / tile_columns - (terminal_padding * 2.0)).max(160.0);
     let terminal_height = ((height - TITLEBAR_HEIGHT) / tile_rows
         - WORKSPACE_BAR_HEIGHT
         - STATUSLINE_HEIGHT
-        - (TERMINAL_Y_PADDING * 2.0))
+        - (terminal_padding * 2.0))
         .max(96.0);
     let columns = (terminal_width / terminal_char_width(terminal_font_size))
         .floor()
@@ -2147,6 +2185,10 @@ fn app_state_dir() -> PathBuf {
     }
 
     PathBuf::from(".lazyterm")
+}
+
+fn default_terminal_padding() -> f32 {
+    DEFAULT_TERMINAL_PADDING
 }
 
 fn load_ui_settings(state_dir: &Path) -> Option<UiSettings> {
@@ -2749,6 +2791,7 @@ mod tests {
         let settings = UiSettings {
             tile_sessions: true,
             terminal_font_size: 15.0,
+            terminal_padding: 22.0,
         };
 
         save_ui_settings(&state_dir, settings).expect("settings save");
@@ -2756,6 +2799,7 @@ mod tests {
         let loaded = load_ui_settings(&state_dir).expect("settings load");
         assert_eq!(loaded.tile_sessions, settings.tile_sessions);
         assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
+        assert_eq!(loaded.terminal_padding, settings.terminal_padding);
         let _ = fs::remove_dir_all(state_dir);
     }
 
@@ -2947,6 +2991,7 @@ mod tests {
                 height: px(760.0),
             },
             12.0,
+            DEFAULT_TERMINAL_PADDING,
             1,
             false,
         );
@@ -2963,6 +3008,7 @@ mod tests {
                 height: px(240.0),
             },
             12.0,
+            DEFAULT_TERMINAL_PADDING,
             1,
             false,
         );
@@ -2979,6 +3025,7 @@ mod tests {
                 height: px(760.0),
             },
             12.0,
+            DEFAULT_TERMINAL_PADDING,
             1,
             false,
         );
@@ -2988,12 +3035,40 @@ mod tests {
                 height: px(760.0),
             },
             16.0,
+            DEFAULT_TERMINAL_PADDING,
             1,
             false,
         );
 
         assert!(larger_font.columns < default_font.columns);
         assert!(larger_font.rows < default_font.rows);
+    }
+
+    #[test]
+    fn terminal_size_tracks_padding() {
+        let compact = terminal_size_for_viewport(
+            Size {
+                width: px(1180.0),
+                height: px(760.0),
+            },
+            12.0,
+            8.0,
+            1,
+            false,
+        );
+        let roomy = terminal_size_for_viewport(
+            Size {
+                width: px(1180.0),
+                height: px(760.0),
+            },
+            12.0,
+            24.0,
+            1,
+            false,
+        );
+
+        assert!(roomy.columns < compact.columns);
+        assert!(roomy.rows < compact.rows);
     }
 
     fn test_state_dir(name: &str) -> PathBuf {

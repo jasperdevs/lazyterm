@@ -43,6 +43,7 @@
 - [x] Agent attention state: needs-input/failed tab marker, statusline notification, focus-attention command
 - [x] Mux pane commands for maximize pane and close other panes
 - [x] Directional pane navigation with Ctrl+Alt+Arrow and command palette actions
+- [x] Persisted terminal density controls for compact/default/roomy layouts
 
 ## Next
 
