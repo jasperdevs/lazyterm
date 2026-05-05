@@ -10,5 +10,8 @@ rust-version.workspace = true
 lazyterm-core = { path = "../lazyterm-core" }
 serde.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

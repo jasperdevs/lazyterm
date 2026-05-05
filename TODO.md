@@ -71,5 +71,5 @@
 - [x] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
 - [x] Add installer/release workflow after the app can launch and render reliably
 - [x] Add dependency license policy enforcement beyond metadata visibility
-- [ ] Add integration coverage for app/UI/API/git boundary crates
+- [x] Add integration coverage for app/UI/API/git boundary crates
 - [x] Prove MSRV with Rust 1.95 in CI instead of stable-only
