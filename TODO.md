@@ -14,6 +14,7 @@
 - [x] Add a direct draggable rail resize handle with persisted custom width
 - [x] Add first-class font settings without adding persistent dashboard chrome
 - [x] Add a Windows local installer with app shortcuts and PATH setup
+- [x] Move window controls out of the rail and add a larger drag gesture target
 
 ## Next
 

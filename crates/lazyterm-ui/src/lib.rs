@@ -1713,69 +1713,33 @@ impl LazytermApp {
         }
     }
 
-    fn render_rail_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_1()
-            .pb_1()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w_full()
-                    .h(px(24.0))
-                    .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(MouseButton::Left, |_, window, _| {
-                        window.start_window_move();
+    fn render_rail_header(&self) -> impl IntoElement {
+        div().flex().flex_col().items_center().gap_1().pb_1().child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w_full()
+                .h(px(34.0))
+                .window_control_area(WindowControlArea::Drag)
+                .on_mouse_down(MouseButton::Left, |_, window, _| {
+                    window.start_window_move();
+                })
+                .id("rail-window-drag")
+                .tooltip(|_, cx| {
+                    cx.new(|_| TooltipView {
+                        label: SharedString::from("drag window"),
                     })
-                    .id("rail-window-drag")
-                    .tooltip(|_, cx| {
-                        cx.new(|_| TooltipView {
-                            label: SharedString::from("drag window"),
-                        })
-                        .into()
-                    })
-                    .child(
-                        div()
-                            .size(px(18.0))
-                            .rounded(px(3.0))
-                            .overflow_hidden()
-                            .child(img("logoblackbackground.svg").size_full()),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(1.0))
-                    .child(self.render_titlebar_button(
-                        IconKind::Minimize,
-                        "window-minimize",
-                        cx,
-                        |_, window| {
-                            window.minimize_window();
-                        },
-                    ))
-                    .child(self.render_titlebar_button(
-                        IconKind::Maximize,
-                        "window-maximize",
-                        cx,
-                        |_, window| {
-                            window.zoom_window();
-                        },
-                    ))
-                    .child(self.render_titlebar_button(
-                        IconKind::Close,
-                        "window-close",
-                        cx,
-                        |_, window| {
-                            window.remove_window();
-                        },
-                    )),
-            )
+                    .into()
+                })
+                .child(
+                    div()
+                        .size(px(18.0))
+                        .rounded(px(3.0))
+                        .overflow_hidden()
+                        .child(img("logoblackbackground.svg").size_full()),
+                ),
+        )
     }
 
     fn render_titlebar_button(
@@ -1817,6 +1781,103 @@ impl LazytermApp {
             }))
     }
 
+    fn render_window_control_button(
+        &self,
+        icon: IconKind,
+        id: &'static str,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Window) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(30.0))
+            .h(px(28.0))
+            .rounded(px(4.0))
+            .when_some(window_control_area_for_icon(icon), |this, area| {
+                this.window_control_area(area)
+            })
+            .hover(|this| this.bg(rgb(SURFACE)))
+            .child(
+                img(icon.asset_path())
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .id(format!("{}-window-icon", icon.label())),
+            )
+            .id(id)
+            .tooltip(move |_, cx| {
+                cx.new(move |_| TooltipView {
+                    label: SharedString::from(icon.label()),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                action(window);
+                this.focus_terminal(window, cx);
+                cx.notify();
+            }))
+    }
+
+    fn render_window_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .top(px(8.0))
+            .right(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(1.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(BG))
+            .id("window-controls")
+            .child(self.render_window_control_button(
+                IconKind::Minimize,
+                "window-minimize",
+                cx,
+                |window| {
+                    window.minimize_window();
+                },
+            ))
+            .child(self.render_window_control_button(
+                IconKind::Maximize,
+                "window-maximize",
+                cx,
+                |window| {
+                    window.zoom_window();
+                },
+            ))
+            .child(self.render_window_control_button(
+                IconKind::Close,
+                "window-close",
+                cx,
+                |window| {
+                    window.remove_window();
+                },
+            ))
+    }
+
+    fn render_window_drag_strip(&self) -> impl IntoElement {
+        div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(self.sidebar_width() + 8.0))
+            .right(px(112.0))
+            .h(px(7.0))
+            .window_control_area(WindowControlArea::Drag)
+            .id("window-top-drag-strip")
+            .tooltip(|_, cx| {
+                cx.new(|_| TooltipView {
+                    label: SharedString::from("drag window"),
+                })
+                .into()
+            })
+            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                window.start_window_move();
+            })
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut tabs = div().flex().flex_col().gap_1();
         for (index, session) in self.sessions.iter().enumerate() {
@@ -1839,7 +1900,7 @@ impl LazytermApp {
                 4.0
             }))
             .py_1()
-            .child(self.render_rail_header(cx))
+            .child(self.render_rail_header())
             .child(
                 div()
                     .flex()
@@ -3149,6 +3210,8 @@ impl Render for LazytermApp {
                     .overflow_hidden()
                     .child(self.render_sidebar(cx))
                     .child(self.render_terminal_workspace(self.focus_handle.is_focused(window), cx))
+                    .child(self.render_window_drag_strip())
+                    .child(self.render_window_controls(cx))
                     .when(self.command_palette_open, |this| {
                         this.child(
                             div()
