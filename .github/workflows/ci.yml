@@ -42,5 +42,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test workspace
         run: cargo test --workspace --locked
-      - name: Check dependency licenses
-        run: cargo metadata --locked --no-deps --format-version 1
+      - name: Check dependency policy
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          command: check
