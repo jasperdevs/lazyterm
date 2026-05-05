@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.95.0
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+            archive: lazyterm-windows-x86_64.zip
+          - name: macos-aarch64
+            os: macos-latest
+            archive: lazyterm-macos-aarch64.tar.gz
+          - name: linux-x86_64
+            os: ubuntu-latest
+            archive: lazyterm-linux-x86_64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: cargo build --workspace --release --locked
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/lazyterm | Out-Null
+          Copy-Item target/release/lazyterm.exe dist/lazyterm/
+          Copy-Item target/release/lazytermctl.exe dist/lazyterm/
+          Copy-Item README.md,LICENSE dist/lazyterm/
+          Compress-Archive -Path dist/lazyterm/* -DestinationPath dist/${{ matrix.archive }} -Force
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist/lazyterm
+          cp target/release/lazyterm dist/lazyterm/
+          cp target/release/lazytermctl dist/lazyterm/
+          cp README.md LICENSE dist/lazyterm/
+          tar -czf "dist/${{ matrix.archive }}" -C dist lazyterm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.archive }}
+
+  publish:
+    name: publish github release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

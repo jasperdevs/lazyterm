@@ -69,7 +69,7 @@
 - [x] Extend resize handles beyond two-pane layouts
 - [x] Add agent pane presets with arguments and working-directory prompts
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
-- [ ] Add installer/release workflow after the app can launch and render reliably
+- [x] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates
-- [ ] Prove MSRV with Rust 1.95 in CI instead of stable-only
+- [x] Prove MSRV with Rust 1.95 in CI instead of stable-only
