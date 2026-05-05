@@ -1,3 +1,9 @@
+use alacritty_terminal::{
+    event::VoidListener,
+    grid::Dimensions,
+    term::{cell::Flags, Config as AlacrittyConfig, Term as AlacrittyTerm},
+    vte::ansi::Processor as AnsiProcessor,
+};
 use gpui::{
     div, img, prelude::*, px, rgb, App, ClipboardItem, Context, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, ParentElement, Pixels, Render, SharedString, Size,
@@ -56,6 +62,7 @@ struct TerminalSession {
     summary: SessionSummary,
     pty: Option<PtyHandle>,
     events: Receiver<PtyEvent>,
+    terminal: TerminalGrid,
     lines: Vec<TerminalLine>,
     pending_line: String,
     terminal_size: TerminalSize,
@@ -74,10 +81,17 @@ enum TerminalLineKind {
 }
 
 enum PtyEvent {
-    Output(String),
+    Output(Vec<u8>),
     Error(String),
     Exited,
 }
+
+struct TerminalGrid {
+    term: AlacrittyTerm<VoidListener>,
+    parser: AnsiProcessor,
+}
+
+struct GridSize(TerminalSize);
 
 impl LazytermApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -145,7 +159,7 @@ impl LazytermApp {
             while let Ok(event) = session.events.try_recv() {
                 changed = true;
                 match event {
-                    PtyEvent::Output(output) => session.push_output(output),
+                    PtyEvent::Output(output) => session.push_output(&output),
                     PtyEvent::Error(error) => {
                         session.lines.push(TerminalLine::error(error));
                         session.summary.status = SessionStatus::Failed;
@@ -826,15 +840,9 @@ impl LazytermApp {
         _cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let session = &self.sessions[session_index];
-        let mut transcript = div().flex().flex_col().gap_1();
-
-        for line in &session.lines {
-            transcript = transcript.child(self.render_line(line));
-        }
-
-        if !session.pending_line.is_empty() {
-            transcript = transcript
-                .child(self.render_line(&TerminalLine::output(session.pending_line.clone())));
+        let mut terminal_grid = div().flex().flex_col();
+        for row in session.terminal.visible_rows() {
+            terminal_grid = terminal_grid.child(self.render_grid_row(row));
         }
 
         div()
@@ -856,7 +864,7 @@ impl LazytermApp {
                     )))
                     .id("terminal-transcript")
                     .overflow_y_scroll()
-                    .child(transcript),
+                    .child(terminal_grid),
             )
             .child(self.render_statusline(focused))
     }
@@ -896,12 +904,7 @@ impl LazytermApp {
             )
     }
 
-    fn render_line(&self, line: &TerminalLine) -> impl IntoElement {
-        let color = match line.kind {
-            TerminalLineKind::Output => TEXT_SOFT,
-            TerminalLineKind::Error => TEXT,
-        };
-
+    fn render_grid_row(&self, row: String) -> impl IntoElement {
         div()
             .flex()
             .items_start()
@@ -910,12 +913,8 @@ impl LazytermApp {
             .line_height(px(terminal_line_height(
                 self.ui_settings.terminal_font_size,
             )))
-            .child(
-                div()
-                    .flex_1()
-                    .text_color(rgb(color))
-                    .child(SharedString::from(line.text.clone())),
-            )
+            .text_color(rgb(TEXT_SOFT))
+            .child(SharedString::from(row))
     }
 
     fn render_statusline(&self, focused: bool) -> impl IntoElement {
@@ -1161,8 +1160,7 @@ impl TerminalSession {
                                 match reader.read(&mut buffer) {
                                     Ok(0) => break,
                                     Ok(count) => {
-                                        let output =
-                                            String::from_utf8_lossy(&buffer[..count]).into_owned();
+                                        let output = buffer[..count].to_vec();
                                         if sender.send(PtyEvent::Output(output)).is_err() {
                                             return;
                                         }
@@ -1201,14 +1199,16 @@ impl TerminalSession {
             },
             pty,
             events,
+            terminal: TerminalGrid::new(TerminalSize::DEFAULT),
             lines,
             pending_line: String::new(),
             terminal_size: TerminalSize::DEFAULT,
         }
     }
 
-    fn push_output(&mut self, output: String) {
-        let output = normalize_pty_output(&output);
+    fn push_output(&mut self, output: &[u8]) {
+        self.terminal.feed(output);
+        let output = normalize_pty_output(&String::from_utf8_lossy(output));
         for segment in output.split_inclusive('\n') {
             if segment.ends_with('\n') {
                 self.pending_line.push_str(segment.trim_end_matches('\n'));
@@ -1239,6 +1239,7 @@ impl TerminalSession {
         }
 
         self.terminal_size = size;
+        self.terminal.resize(size);
         let Some(pty) = &self.pty else {
             return;
         };
@@ -1248,6 +1249,76 @@ impl TerminalSession {
                 .push(TerminalLine::error(format!("resize failed: {error}")));
             self.summary.status = SessionStatus::Failed;
         }
+    }
+}
+
+impl TerminalGrid {
+    fn new(size: TerminalSize) -> Self {
+        Self {
+            term: AlacrittyTerm::new(AlacrittyConfig::default(), &GridSize(size), VoidListener),
+            parser: AnsiProcessor::new(),
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.term, bytes);
+    }
+
+    fn resize(&mut self, size: TerminalSize) {
+        self.term.resize(GridSize(size));
+    }
+
+    fn visible_rows(&self) -> Vec<String> {
+        let columns = self.term.grid().columns();
+        let rows = self.term.grid().screen_lines();
+        let cursor = self.term.grid().cursor.point;
+        let mut visible = Vec::with_capacity(rows);
+        let mut current = String::with_capacity(columns);
+
+        for indexed in self.term.grid().display_iter() {
+            if indexed.point.column.0 == 0 && !current.is_empty() {
+                visible.push(trim_terminal_row(current));
+                current = String::with_capacity(columns);
+            }
+
+            let mut character = if indexed.cell.flags.contains(Flags::HIDDEN)
+                || indexed.cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+            {
+                ' '
+            } else {
+                indexed.cell.c
+            };
+
+            if indexed.point == cursor {
+                character = if character == ' ' { '_' } else { character };
+            }
+
+            current.push(character);
+            if let Some(zerowidth) = indexed.cell.zerowidth() {
+                current.extend(zerowidth);
+            }
+        }
+
+        visible.push(trim_terminal_row(current));
+        while visible.len() < rows {
+            visible.push(String::new());
+        }
+
+        visible
+    }
+}
+
+impl Dimensions for GridSize {
+    fn total_lines(&self) -> usize {
+        usize::from(self.0.rows)
+    }
+
+    fn screen_lines(&self) -> usize {
+        usize::from(self.0.rows)
+    }
+
+    fn columns(&self) -> usize {
+        usize::from(self.0.columns)
     }
 }
 
@@ -1382,6 +1453,12 @@ fn session_context_label(session: &TerminalSession) -> String {
     }
 }
 
+fn trim_terminal_row(mut row: String) -> String {
+    let trimmed = row.trim_end_matches(' ').len();
+    row.truncate(trimmed);
+    row
+}
+
 fn normalize_pty_output(output: &str) -> String {
     let mut normalized = String::new();
     let mut chars = output.chars().peekable();
@@ -1462,6 +1539,27 @@ mod tests {
         assert_eq!(tab_index_for_key("9"), Some(8));
         assert_eq!(tab_index_for_key("0"), None);
         assert_eq!(tab_index_for_key("t"), None);
+    }
+
+    #[test]
+    fn terminal_grid_tracks_cursor_movement_sequences() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"hello\x1b[1D!");
+        let rows = grid.visible_rows();
+
+        assert_eq!(rows[0], "hell!_");
+    }
+
+    #[test]
+    fn terminal_grid_honors_clear_screen_sequences() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"before\x1b[2J\x1b[Hafter");
+        let rows = grid.visible_rows();
+
+        assert_eq!(rows[0], "after_");
+        assert!(rows.iter().skip(1).all(String::is_empty));
     }
 
     #[test]

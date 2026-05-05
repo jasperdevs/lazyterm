@@ -25,6 +25,7 @@
 - [x] Terminal key passthrough for paste, function keys, alt chords, and generic control chords
 - [x] Tiled multiplexer view for watching multiple shells at once
 - [x] Terminal surface takes focus on app launch
+- [x] Alacritty-backed terminal grid for ANSI parsing and cursor movement
 
 ## Next
 
@@ -32,7 +33,7 @@
 - [ ] Replace demo sessions with persisted session state
 - [ ] Add real split-pane resize handles and per-pane PTY sizing
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
-- [ ] Replace transcript text rendering with a real alacritty_terminal grid renderer
+- [ ] Render per-cell colors, bold/dim, inverse, underline, and cursor shape from the Alacritty grid
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates
