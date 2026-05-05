@@ -42,6 +42,7 @@
 - [x] Slop UI cleanup pass: slimmer vertical tabs, SVG logo, selected command row, fewer placeholders
 - [x] Agent attention state: needs-input/failed tab marker, statusline notification, focus-attention command
 - [x] Mux pane commands for maximize pane and close other panes
+- [x] Directional pane navigation with Ctrl+Alt+Arrow and command palette actions
 
 ## Next
 

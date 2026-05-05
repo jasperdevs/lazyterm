@@ -183,6 +183,14 @@ struct TerminalInputElement {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PaneDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandKind {
     NewShell,
     NewCodex,
@@ -196,6 +204,10 @@ enum CommandKind {
     ClosePane,
     CloseOtherPanes,
     FocusAttention,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
     CopyTranscript,
     Paste,
     MaximizePane,
@@ -485,6 +497,20 @@ impl LazytermApp {
             return true;
         }
 
+        if modifiers.control && modifiers.alt {
+            let direction = match key {
+                "left" => Some(PaneDirection::Left),
+                "right" => Some(PaneDirection::Right),
+                "up" => Some(PaneDirection::Up),
+                "down" => Some(PaneDirection::Down),
+                _ => None,
+            };
+            if let Some(direction) = direction {
+                self.activate_direction(direction);
+                return true;
+            }
+        }
+
         false
     }
 
@@ -698,6 +724,27 @@ impl LazytermApp {
         };
     }
 
+    fn activate_direction(&mut self, direction: PaneDirection) {
+        if self.sessions.len() <= 1 {
+            return;
+        }
+
+        if !self.ui_settings.tile_sessions {
+            match direction {
+                PaneDirection::Left | PaneDirection::Up => self.activate_previous_session(),
+                PaneDirection::Right | PaneDirection::Down => self.activate_next_session(),
+            }
+            return;
+        }
+
+        let columns = tile_columns(self.sessions.len());
+        if let Some(index) =
+            directional_session_index(self.active_session, self.sessions.len(), columns, direction)
+        {
+            self.active_session = index;
+        }
+    }
+
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
@@ -760,6 +807,10 @@ impl LazytermApp {
             CommandKind::ClosePane => self.close_active_terminal(),
             CommandKind::CloseOtherPanes => self.close_other_terminals(),
             CommandKind::FocusAttention => self.focus_next_attention_session(),
+            CommandKind::FocusLeft => self.activate_direction(PaneDirection::Left),
+            CommandKind::FocusRight => self.activate_direction(PaneDirection::Right),
+            CommandKind::FocusUp => self.activate_direction(PaneDirection::Up),
+            CommandKind::FocusDown => self.activate_direction(PaneDirection::Down),
             CommandKind::CopyTranscript => self.copy_active_transcript(cx),
             CommandKind::Paste => self.paste_clipboard(cx),
             CommandKind::MaximizePane => self.maximize_active_terminal(),
@@ -827,6 +878,26 @@ impl LazytermApp {
                 kind: CommandKind::FocusAttention,
                 label: "focus attention",
                 shortcut: "ctrl+shift+u",
+            },
+            CommandItem {
+                kind: CommandKind::FocusLeft,
+                label: "focus left",
+                shortcut: "ctrl+alt+left",
+            },
+            CommandItem {
+                kind: CommandKind::FocusRight,
+                label: "focus right",
+                shortcut: "ctrl+alt+right",
+            },
+            CommandItem {
+                kind: CommandKind::FocusUp,
+                label: "focus up",
+                shortcut: "ctrl+alt+up",
+            },
+            CommandItem {
+                kind: CommandKind::FocusDown,
+                label: "focus down",
+                shortcut: "ctrl+alt+down",
             },
             CommandItem {
                 kind: CommandKind::RestartPane,
@@ -2226,6 +2297,30 @@ fn tile_columns(session_count: usize) -> usize {
     }
 }
 
+fn directional_session_index(
+    active: usize,
+    session_count: usize,
+    columns: usize,
+    direction: PaneDirection,
+) -> Option<usize> {
+    if session_count <= 1 || columns == 0 || active >= session_count {
+        return None;
+    }
+
+    let rows = session_count.div_ceil(columns);
+    let row = active / columns;
+    let column = active % columns;
+    let next = match direction {
+        PaneDirection::Left if column > 0 => Some(active - 1),
+        PaneDirection::Right if column + 1 < columns => Some(active + 1),
+        PaneDirection::Up if row > 0 => Some(active - columns),
+        PaneDirection::Down if row + 1 < rows => Some((active + columns).min(session_count - 1)),
+        _ => None,
+    }?;
+
+    (next < session_count).then_some(next)
+}
+
 fn terminal_char_width(font_size: f32) -> f32 {
     TERMINAL_CHAR_WIDTH * (font_size / 12.0)
 }
@@ -2751,6 +2846,30 @@ mod tests {
         assert_eq!(tab_index_for_key("9"), Some(8));
         assert_eq!(tab_index_for_key("0"), None);
         assert_eq!(tab_index_for_key("t"), None);
+    }
+
+    #[test]
+    fn directional_navigation_tracks_grid_neighbors() {
+        assert_eq!(
+            directional_session_index(0, 4, 2, PaneDirection::Right),
+            Some(1)
+        );
+        assert_eq!(
+            directional_session_index(0, 4, 2, PaneDirection::Down),
+            Some(2)
+        );
+        assert_eq!(
+            directional_session_index(0, 4, 2, PaneDirection::Left),
+            None
+        );
+        assert_eq!(
+            directional_session_index(3, 5, 3, PaneDirection::Down),
+            None
+        );
+        assert_eq!(
+            directional_session_index(2, 5, 3, PaneDirection::Down),
+            Some(4)
+        );
     }
 
     #[test]
