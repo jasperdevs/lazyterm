@@ -51,6 +51,8 @@ const STATUSLINE_HEIGHT: f32 = 18.0;
 const COMPACT_SIDEBAR_WIDTH: f32 = 60.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 212.0;
 const WIDE_SIDEBAR_WIDTH: f32 = 268.0;
+const MIN_CUSTOM_SIDEBAR_WIDTH: f32 = 52.0;
+const MAX_CUSTOM_SIDEBAR_WIDTH: f32 = 288.0;
 const COMMAND_PALETTE_WIDTH: f32 = 480.0;
 const COMMAND_PALETTE_MAX_HEIGHT: f32 = 560.0;
 const COMMAND_PALETTE_TOP: f32 = 10.0;
@@ -82,6 +84,7 @@ pub struct LazytermApp {
     api_events: Receiver<ApiEvent>,
     ui_settings: UiSettings,
     resize_drag: Option<ResizeDrag>,
+    rail_resize_drag: Option<RailResizeDrag>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +92,7 @@ struct UiSettings {
     tile_sessions: bool,
     tile_layout: TileLayout,
     rail_width: RailWidth,
+    custom_rail_width: Option<f32>,
     terminal_font_size: f32,
     terminal_padding: f32,
     split_ratio: f32,
@@ -101,6 +105,12 @@ struct ResizeDrag {
     handle_index: usize,
     start_position: Point<Pixels>,
     start_ratios: Vec<f32>,
+}
+
+#[derive(Clone, Debug)]
+struct RailResizeDrag {
+    start_position: Point<Pixels>,
+    start_width: f32,
 }
 
 #[derive(Clone)]
@@ -185,6 +195,9 @@ impl From<PersistedUiSettings> for UiSettings {
             tile_sessions: value.tile_sessions,
             tile_layout: value.tile_layout,
             rail_width: value.rail_width,
+            custom_rail_width: value
+                .custom_rail_width
+                .map(|width| width.clamp(MIN_CUSTOM_SIDEBAR_WIDTH, MAX_CUSTOM_SIDEBAR_WIDTH)),
             terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
             terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
             split_ratio: value.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO),
@@ -199,6 +212,7 @@ impl From<UiSettings> for PersistedUiSettings {
             tile_sessions: value.tile_sessions,
             tile_layout: value.tile_layout,
             rail_width: value.rail_width,
+            custom_rail_width: value.custom_rail_width,
             terminal_font_size: value.terminal_font_size,
             terminal_padding: value.terminal_padding,
             split_ratio: value.split_ratio,
@@ -214,6 +228,8 @@ struct PersistedUiSettings {
     tile_layout: TileLayout,
     #[serde(default = "default_rail_width")]
     rail_width: RailWidth,
+    #[serde(default)]
+    custom_rail_width: Option<f32>,
     terminal_font_size: f32,
     #[serde(default = "default_terminal_padding")]
     terminal_padding: f32,
@@ -459,6 +475,7 @@ impl LazytermApp {
             tile_sessions: false,
             tile_layout: TileLayout::Grid,
             rail_width: RailWidth::Compact,
+            custom_rail_width: None,
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
             split_ratio: DEFAULT_SPLIT_RATIO,
@@ -494,6 +511,7 @@ impl LazytermApp {
             api_events,
             ui_settings,
             resize_drag: None,
+            rail_resize_drag: None,
         };
 
         app.keystroke_observer = Some(cx.observe_keystrokes(|this, event, window, cx| {
@@ -1282,15 +1300,18 @@ impl LazytermApp {
 
     fn set_rail_width(&mut self, width: RailWidth) {
         self.ui_settings.rail_width = width;
+        self.ui_settings.custom_rail_width = None;
         self.persist_ui_settings();
     }
 
     fn sidebar_width(&self) -> f32 {
-        sidebar_width_for_rail(self.ui_settings.rail_width)
+        self.ui_settings
+            .custom_rail_width
+            .unwrap_or_else(|| sidebar_width_for_rail(self.ui_settings.rail_width))
     }
 
     fn show_rail_metadata(&self) -> bool {
-        self.ui_settings.rail_width == RailWidth::Wide
+        self.sidebar_width() >= DEFAULT_SIDEBAR_WIDTH
     }
 
     fn toggle_tile_sessions(&mut self) {
@@ -1316,6 +1337,28 @@ impl LazytermApp {
             start_position: position,
             start_ratios: pane_ratios_for_count(&self.ui_settings, self.sessions.len()),
         });
+    }
+
+    fn start_rail_resize_drag(&mut self, position: Point<Pixels>) {
+        self.rail_resize_drag = Some(RailResizeDrag {
+            start_position: position,
+            start_width: self.sidebar_width(),
+        });
+    }
+
+    fn update_rail_resize_drag(&mut self, position: Point<Pixels>) -> bool {
+        let Some(drag) = self.rail_resize_drag.as_ref() else {
+            return false;
+        };
+
+        let next_width = (drag.start_width + position.x.as_f32() - drag.start_position.x.as_f32())
+            .clamp(MIN_CUSTOM_SIDEBAR_WIDTH, MAX_CUSTOM_SIDEBAR_WIDTH);
+        if (self.sidebar_width() - next_width).abs() < 0.5 {
+            return false;
+        }
+
+        self.ui_settings.custom_rail_width = Some(next_width);
+        true
     }
 
     fn update_resize_drag(&mut self, position: Point<Pixels>, viewport: Size<Pixels>) -> bool {
@@ -1359,7 +1402,7 @@ impl LazytermApp {
     }
 
     fn stop_resize_drag(&mut self) -> bool {
-        if self.resize_drag.take().is_some() {
+        if self.resize_drag.take().is_some() || self.rail_resize_drag.take().is_some() {
             self.persist_ui_settings();
             return true;
         }
@@ -1755,6 +1798,7 @@ impl LazytermApp {
         div()
             .flex()
             .flex_col()
+            .relative()
             .gap_1()
             .w(px(self.sidebar_width()))
             .h_full()
@@ -1812,6 +1856,42 @@ impl LazytermApp {
                     .id("session-rail")
                     .overflow_y_scroll()
                     .child(tabs.w_full()),
+            )
+            .child(self.render_rail_resize_handle(cx))
+    }
+
+    fn render_rail_resize_handle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .right(px(0.0))
+            .top(px(0.0))
+            .bottom(px(0.0))
+            .w(px(4.0))
+            .bg(rgb(BG))
+            .cursor(CursorStyle::ResizeLeftRight)
+            .hover(|this| this.bg(rgb(TEXT_FAINT)))
+            .id("rail-resize-handle")
+            .tooltip(|_, cx| {
+                cx.new(|_| TooltipView {
+                    label: SharedString::from("resize rail"),
+                })
+                .into()
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.start_rail_resize_drag(event.position);
+                    this.focus_terminal(window, cx);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.stop_resize_drag() {
+                        cx.notify();
+                    }
+                }),
             )
     }
 
@@ -3016,7 +3096,9 @@ impl Render for LazytermApp {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                if this.update_resize_drag(event.position, window.viewport_size()) {
+                if this.update_resize_drag(event.position, window.viewport_size())
+                    || this.update_rail_resize_drag(event.position)
+                {
                     cx.notify();
                 }
             }))
@@ -4548,6 +4630,7 @@ mod tests {
             tile_sessions: true,
             tile_layout: TileLayout::Columns,
             rail_width: RailWidth::Wide,
+            custom_rail_width: Some(144.0),
             terminal_font_size: 15.0,
             terminal_padding: 22.0,
             split_ratio: 0.65,
@@ -4560,6 +4643,7 @@ mod tests {
         assert_eq!(loaded.tile_sessions, settings.tile_sessions);
         assert_eq!(loaded.tile_layout, settings.tile_layout);
         assert_eq!(loaded.rail_width, settings.rail_width);
+        assert_eq!(loaded.custom_rail_width, settings.custom_rail_width);
         assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
         assert_eq!(loaded.terminal_padding, settings.terminal_padding);
         assert_eq!(loaded.split_ratio, settings.split_ratio);
@@ -4587,7 +4671,31 @@ mod tests {
         let loaded = load_ui_settings(&state_dir).expect("settings load");
 
         assert_eq!(loaded.rail_width, RailWidth::Compact);
+        assert_eq!(loaded.custom_rail_width, None);
         let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
+    fn custom_rail_width_overrides_presets_and_clamps() {
+        let settings = UiSettings {
+            tile_sessions: false,
+            tile_layout: TileLayout::Grid,
+            rail_width: RailWidth::Wide,
+            custom_rail_width: Some(MAX_CUSTOM_SIDEBAR_WIDTH + 50.0),
+            terminal_font_size: 12.0,
+            terminal_padding: DEFAULT_TERMINAL_PADDING,
+            split_ratio: DEFAULT_SPLIT_RATIO,
+            pane_ratios: Vec::new(),
+        };
+        let loaded = UiSettings::from(PersistedUiSettings::from(settings));
+
+        assert_eq!(loaded.custom_rail_width, Some(MAX_CUSTOM_SIDEBAR_WIDTH));
+        assert_eq!(
+            loaded
+                .custom_rail_width
+                .unwrap_or_else(|| sidebar_width_for_rail(loaded.rail_width)),
+            MAX_CUSTOM_SIDEBAR_WIDTH
+        );
     }
 
     #[test]

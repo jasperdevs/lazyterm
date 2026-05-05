@@ -11,10 +11,10 @@
 - [x] Add tooltips for rail/window controls
 - [x] Audit common terminal editing chords against native terminal defaults
 - [x] Add stronger shortcut coverage for paste and window/control icons
+- [x] Add a direct draggable rail resize handle with persisted custom width
 
 ## Next
 
-- [ ] Replace rail width presets with direct drag/resizable rail behavior
 - [ ] Add first-class theme/font settings without adding persistent dashboard chrome
 - [ ] Add packaged installers and signed release artifacts
 
