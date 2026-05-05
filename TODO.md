@@ -24,6 +24,7 @@
 - [x] Session controls for new, restart, close, and keyboard tab cycling
 - [x] Terminal key passthrough for paste, function keys, alt chords, and generic control chords
 - [x] Tiled multiplexer view for watching multiple shells at once
+- [x] Terminal surface takes focus on app launch
 
 ## Next
 

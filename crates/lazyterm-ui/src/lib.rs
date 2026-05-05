@@ -40,6 +40,7 @@ pub struct LazytermApp {
     sessions: Vec<TerminalSession>,
     active_session: usize,
     poller_started: bool,
+    initial_focus_done: bool,
     settings_open: bool,
     ui_settings: UiSettings,
 }
@@ -96,6 +97,7 @@ impl LazytermApp {
             sessions,
             active_session: 0,
             poller_started: false,
+            initial_focus_done: false,
             settings_open: false,
             ui_settings: UiSettings {
                 compact_tabs: false,
@@ -1274,6 +1276,10 @@ impl Focusable for LazytermApp {
 impl Render for LazytermApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.start_poller(window, cx);
+        if !self.initial_focus_done {
+            self.initial_focus_done = true;
+            self.focus_terminal(window, cx);
+        }
         self.poll_pty_events();
         self.resize_sessions(window.viewport_size());
 
