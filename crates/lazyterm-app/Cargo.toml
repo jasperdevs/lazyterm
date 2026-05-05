@@ -18,3 +18,6 @@ lazyterm-ui = { path = "../lazyterm-ui" }
 
 [lints]
 workspace = true
+
+[build-dependencies]
+winresource = "0.1.31"

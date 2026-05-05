@@ -13,7 +13,6 @@ use std::time::Duration;
 
 const BG: u32 = 0x050505;
 const PANEL: u32 = 0x0c0c0c;
-const PANEL_RAISED: u32 = 0x121212;
 const PANEL_ACTIVE: u32 = 0x181818;
 const BORDER: u32 = 0x282828;
 const BORDER_ACTIVE: u32 = 0x555555;
@@ -21,6 +20,14 @@ const TEXT: u32 = 0xf2f2f2;
 const TEXT_SOFT: u32 = 0xc9c9c9;
 const TEXT_MUTED: u32 = 0x858585;
 const TEXT_DIM: u32 = 0x5f5f5f;
+
+const TITLEBAR_HEIGHT: f32 = 38.0;
+const RAIL_WIDTH: f32 = 76.0;
+const TERMINAL_X_PADDING: f32 = 18.0;
+const TERMINAL_Y_PADDING: f32 = 14.0;
+const INPUT_HEIGHT: f32 = 42.0;
+const TERMINAL_CHAR_WIDTH: f32 = 8.0;
+const TERMINAL_LINE_HEIGHT: f32 = 18.0;
 
 pub struct LazytermApp {
     focus_handle: FocusHandle,
@@ -50,7 +57,6 @@ struct TerminalLine {
 enum TerminalLineKind {
     Output,
     Error,
-    Status,
 }
 
 enum PtyEvent {
@@ -218,7 +224,7 @@ impl LazytermApp {
             .flex()
             .items_center()
             .justify_between()
-            .h(px(46.0))
+            .h(px(TITLEBAR_HEIGHT))
             .px_3()
             .border_b_1()
             .border_color(rgb(BORDER))
@@ -227,55 +233,37 @@ impl LazytermApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap_2()
+                    .font_family("JetBrains Mono")
                     .child(
                         div()
-                            .size(px(28.0))
+                            .size(px(24.0))
                             .rounded_lg()
                             .overflow_hidden()
                             .child(svg().path("logoblackbackground.svg").size_full()),
                     )
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap_0()
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(rgb(TEXT))
-                                    .child("Lazyterm"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgb(TEXT_DIM))
-                                    .child(self.cwd.display().to_string()),
-                            ),
+                            .text_size(px(12.0))
+                            .text_color(rgb(TEXT))
+                            .child("Lazyterm"),
                     ),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
-                    .child(self.render_titlebar_meta())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(26.0))
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(PANEL))
-                            .text_color(rgb(TEXT_MUTED))
-                            .text_size(px(12.0))
-                            .child("x")
-                            .id("window-close")
-                            .on_click(cx.listener(|_, _, window, _| window.remove_window())),
-                    ),
+                    .justify_center()
+                    .size(px(24.0))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL))
+                    .text_color(rgb(TEXT_MUTED))
+                    .text_size(px(12.0))
+                    .child("x")
+                    .id("window-close")
+                    .on_click(cx.listener(|_, _, window, _| window.remove_window())),
             )
     }
 
@@ -288,10 +276,12 @@ impl LazytermApp {
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            .w(px(250.0))
+            .items_center()
+            .gap_2()
+            .w(px(RAIL_WIDTH))
             .h_full()
-            .p_3()
+            .px_2()
+            .py_3()
             .border_r_1()
             .border_color(rgb(BORDER))
             .bg(rgb(PANEL))
@@ -299,35 +289,31 @@ impl LazytermApp {
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_color(rgb(TEXT_SOFT))
-                            .text_size(px(12.0))
-                            .child("sessions"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(24.0))
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(PANEL_RAISED))
-                            .text_color(rgb(TEXT_SOFT))
-                            .text_size(px(14.0))
-                            .child("+")
-                            .id("new-terminal")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.create_terminal();
-                                this.focus_terminal(window, cx);
-                                cx.notify();
-                            })),
-                    ),
+                    .justify_center()
+                    .size(px(42.0))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(BG))
+                    .text_color(rgb(TEXT_SOFT))
+                    .font_family("JetBrains Mono")
+                    .text_size(px(16.0))
+                    .child("+")
+                    .id("new-terminal")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.create_terminal();
+                        this.focus_terminal(window, cx);
+                        cx.notify();
+                    })),
             )
-            .child(tabs)
+            .child(
+                div()
+                    .w_full()
+                    .flex_1()
+                    .id("session-rail")
+                    .overflow_y_scroll()
+                    .child(tabs.w_full()),
+            )
     }
 
     fn render_session_tab(
@@ -337,47 +323,38 @@ impl LazytermApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = index == self.active_session;
-        let branch = session
-            .summary
-            .workspace
-            .git_branch
-            .as_deref()
-            .unwrap_or("local");
+        let status_color = match session.summary.status {
+            SessionStatus::Failed => TEXT,
+            SessionStatus::Done => TEXT_MUTED,
+            _ => TEXT_SOFT,
+        };
 
         div()
             .flex()
             .items_center()
-            .gap_3()
+            .justify_center()
+            .relative()
+            .w_full()
+            .h(px(50.0))
             .rounded_lg()
             .border_1()
             .border_color(rgb(if active { BORDER_ACTIVE } else { BORDER }))
-            .bg(rgb(if active { PANEL_ACTIVE } else { PANEL_RAISED }))
-            .p_3()
+            .bg(rgb(if active { PANEL_ACTIVE } else { PANEL }))
+            .font_family("JetBrains Mono")
             .child(
                 div()
-                    .w(px(4.0))
-                    .h(px(38.0))
+                    .absolute()
+                    .left(px(6.0))
+                    .top(px(6.0))
+                    .size(px(5.0))
                     .rounded_full()
-                    .bg(rgb(if active { TEXT_SOFT } else { BORDER_ACTIVE })),
+                    .bg(rgb(status_color)),
             )
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .flex_1()
-                    .child(
-                        div()
-                            .text_color(rgb(if active { TEXT } else { TEXT_SOFT }))
-                            .text_size(px(12.0))
-                            .child(SharedString::from(session.summary.title.clone())),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(TEXT_DIM))
-                            .text_size(px(11.0))
-                            .child(format!("{branch} / {}", session.summary.status.label())),
-                    ),
+                    .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
+                    .text_size(px(14.0))
+                    .child((index + 1).to_string()),
             )
             .id(format!("session-tab-{index}"))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -408,95 +385,31 @@ impl LazytermApp {
             .bg(rgb(BG))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_5()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_color(rgb(TEXT))
-                                    .text_size(px(15.0))
-                                    .child(SharedString::from(session.summary.title.clone())),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(TEXT_DIM))
-                                    .text_size(px(11.0))
-                                    .child(session.summary.workspace.cwd.display().to_string()),
-                            ),
-                    )
-                    .child(self.render_status_pill(
-                        session.summary.status.label(),
-                        TEXT_SOFT,
-                        PANEL_RAISED,
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
                     .flex_1()
-                    .m_4()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(PANEL))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .h(px(34.0))
-                            .px_4()
-                            .flex()
-                            .items_center()
-                            .border_b_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(PANEL_RAISED))
-                            .text_size(px(11.0))
-                            .text_color(rgb(TEXT_MUTED))
-                            .child(session.summary.command.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .p_4()
-                            .gap_1()
-                            .id("terminal-transcript")
-                            .overflow_y_scroll()
-                            .child(transcript),
-                    )
-                    .child(self.render_input(focused)),
+                    .px(px(TERMINAL_X_PADDING))
+                    .py(px(TERMINAL_Y_PADDING))
+                    .font_family("JetBrains Mono")
+                    .text_size(px(12.0))
+                    .line_height(px(TERMINAL_LINE_HEIGHT))
+                    .id("terminal-transcript")
+                    .overflow_y_scroll()
+                    .child(transcript),
             )
+            .child(self.render_input(focused))
     }
 
     fn render_line(&self, line: &TerminalLine) -> impl IntoElement {
-        let (marker, color) = match line.kind {
-            TerminalLineKind::Output => (" ", TEXT_SOFT),
-            TerminalLineKind::Error => ("!", TEXT),
-            TerminalLineKind::Status => ("-", TEXT_MUTED),
+        let color = match line.kind {
+            TerminalLineKind::Output => TEXT_SOFT,
+            TerminalLineKind::Error => TEXT,
         };
 
         div()
             .flex()
             .items_start()
-            .gap_3()
             .font_family("JetBrains Mono")
             .text_size(px(12.0))
-            .line_height(px(19.0))
-            .child(
-                div()
-                    .w(px(14.0))
-                    .text_color(rgb(TEXT_DIM))
-                    .child(SharedString::from(marker)),
-            )
+            .line_height(px(TERMINAL_LINE_HEIGHT))
             .child(
                 div()
                     .flex_1()
@@ -509,73 +422,31 @@ impl LazytermApp {
         div()
             .flex()
             .items_center()
-            .gap_4()
+            .gap_3()
+            .h(px(INPUT_HEIGHT))
             .border_t_1()
             .border_color(rgb(if focused { BORDER_ACTIVE } else { BORDER }))
-            .bg(rgb(PANEL_RAISED))
-            .px_5()
-            .py_4()
+            .bg(rgb(BG))
+            .px(px(TERMINAL_X_PADDING))
             .font_family("JetBrains Mono")
-            .text_size(px(15.0))
+            .text_size(px(13.0))
             .id("terminal-input")
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(30.0))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(if focused { BORDER_ACTIVE } else { BORDER }))
-                    .bg(rgb(BG))
+                    .w(px(14.0))
                     .text_color(rgb(if focused { TEXT } else { TEXT_DIM }))
                     .child(">"),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_1()
-                    .min_h(px(34.0))
-                    .text_color(rgb(TEXT_MUTED))
-                    .child(SharedString::from(
-                        self.sessions[self.active_session].summary.command.clone(),
-                    )),
-            )
+            .child(div().flex_1().min_h(px(1.0)))
             .child(
                 div()
                     .w(px(7.0))
-                    .h(px(22.0))
+                    .h(px(18.0))
                     .bg(rgb(if focused { TEXT } else { TEXT_DIM })),
             )
-    }
-
-    fn render_status_pill(&self, label: &str, fg: u32, bg: u32) -> impl IntoElement {
-        div()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(BORDER))
-            .px_2()
-            .py_1()
-            .bg(rgb(bg))
-            .text_color(rgb(fg))
-            .text_size(px(11.0))
-            .child(SharedString::from(label.to_string()))
-    }
-
-    fn render_titlebar_meta(&self) -> impl IntoElement {
-        let branch = self.branch.as_deref().unwrap_or("local");
-        let status = self.sessions[self.active_session].summary.status.label();
-
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(px(11.0))
-            .text_color(rgb(TEXT_MUTED))
-            .child(SharedString::from(branch.to_string()))
-            .child(div().size(px(3.0)).rounded_full().bg(rgb(TEXT_DIM)))
-            .child(SharedString::from(status.to_string()))
     }
 }
 
@@ -586,7 +457,7 @@ impl TerminalSession {
         let mut command = ShellCommand::default_for_platform();
         command.cwd = Some(cwd.clone());
         let command_label = command.program.clone();
-        let mut lines = vec![TerminalLine::status(format!("cwd {}", cwd.display()))];
+        let mut lines = Vec::new();
 
         let (pty, status) =
             match PtySession::spawn(&command, terminal_size_to_pty_size(TerminalSize::DEFAULT)) {
@@ -704,13 +575,6 @@ impl TerminalLine {
             text: text.into(),
         }
     }
-
-    fn status(text: impl Into<String>) -> Self {
-        Self {
-            kind: TerminalLineKind::Status,
-            text: text.into(),
-        }
-    }
 }
 
 impl Focusable for LazytermApp {
@@ -753,10 +617,11 @@ impl Render for LazytermApp {
 fn terminal_size_for_viewport(viewport: Size<Pixels>) -> TerminalSize {
     let width = viewport.width.as_f32();
     let height = viewport.height.as_f32();
-    let terminal_width = (width - 250.0 - 32.0).max(160.0);
-    let terminal_height = (height - 46.0 - 58.0 - 34.0 - 72.0 - 32.0).max(96.0);
-    let columns = (terminal_width / 8.0).floor().max(20.0) as u16;
-    let rows = (terminal_height / 19.0).floor().max(5.0) as u16;
+    let terminal_width = (width - RAIL_WIDTH - (TERMINAL_X_PADDING * 2.0)).max(160.0);
+    let terminal_height =
+        (height - TITLEBAR_HEIGHT - INPUT_HEIGHT - (TERMINAL_Y_PADDING * 2.0)).max(96.0);
+    let columns = (terminal_width / TERMINAL_CHAR_WIDTH).floor().max(20.0) as u16;
+    let rows = (terminal_height / TERMINAL_LINE_HEIGHT).floor().max(5.0) as u16;
 
     TerminalSize::new(columns, rows)
 }
@@ -844,7 +709,7 @@ mod tests {
             height: px(240.0),
         });
 
-        assert_eq!(size.columns, 20);
-        assert_eq!(size.rows, 5);
+        assert_eq!(size.columns, 23);
+        assert_eq!(size.rows, 7);
     }
 }

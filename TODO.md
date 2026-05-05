@@ -14,6 +14,9 @@
 - [x] Custom monochrome titlebar with the Lazyterm logo
 - [x] Streaming PTY-backed shell sessions in the GPUI surface
 - [x] Functional vertical terminal tabs with per-tab shell state
+- [x] Windows GUI launch without a separate console window
+- [x] Embedded Windows app icon generated from the black-background logo
+- [x] Terminal-first monochrome mux surface without dashboard/helper chrome
 
 ## Next
 
