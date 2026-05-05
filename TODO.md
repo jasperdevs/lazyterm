@@ -47,11 +47,12 @@
 - [x] CLI/API pane controls for close-others and focus-attention
 - [x] Persisted pane layout modes for grid, columns, and rows
 - [x] CLI/API layout and density controls
+- [x] Drag resize handle for two-pane column/row layouts with persisted split ratio
 
 ## Next
 
 - [ ] Deeper terminal-first chrome pass with screenshots against a visual reference
-- [ ] Add drag resize handles for pane width/height
+- [ ] Extend resize handles beyond two-pane layouts
 - [ ] Add agent pane presets with arguments, working-directory prompts, and health checks
 - [ ] Add real split-pane resize handles
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols

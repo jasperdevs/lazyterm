@@ -8,11 +8,12 @@ use alacritty_terminal::{
     },
 };
 use gpui::{
-    div, img, prelude::*, px, rgb, App, Bounds, ClipboardItem, Context, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, FontWeight,
-    GlobalElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, ParentElement, Pixels, Point,
-    Render, SharedString, Size, StatefulInteractiveElement, Style, Styled, Subscription,
-    UTF16Selection, Window,
+    div, img, prelude::*, px, relative, rgb, App, Bounds, ClipboardItem, Context, CursorStyle, Div,
+    Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
+    FontWeight, GlobalElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    SharedString, Size, StatefulInteractiveElement, Style, Styled, Subscription, UTF16Selection,
+    Window,
 };
 use lazyterm_agents::detect_status;
 use lazyterm_api::{
@@ -51,10 +52,15 @@ const SIDEBAR_WIDTH: f32 = 58.0;
 const COMMAND_PALETTE_WIDTH: f32 = 360.0;
 const COMMAND_PALETTE_TOP: f32 = TITLEBAR_HEIGHT + 10.0;
 const DEFAULT_TERMINAL_PADDING: f32 = 16.0;
+const DEFAULT_SPLIT_RATIO: f32 = 0.5;
+const MIN_SPLIT_RATIO: f32 = 0.2;
+const MAX_SPLIT_RATIO: f32 = 0.8;
+const RESIZE_HANDLE_SIZE: f32 = 6.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
 const TAB_HEIGHT: f32 = 42.0;
 const API_BIND_ADDR: &str = "127.0.0.1:47431";
+const API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct LazytermApp {
     focus_handle: FocusHandle,
@@ -70,6 +76,7 @@ pub struct LazytermApp {
     command_palette_query: String,
     api_events: Receiver<ApiEvent>,
     ui_settings: UiSettings,
+    resize_drag: Option<ResizeDrag>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +85,31 @@ struct UiSettings {
     tile_layout: TileLayout,
     terminal_font_size: f32,
     terminal_padding: f32,
+    split_ratio: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResizeDrag {
+    orientation: SplitOrientation,
+    start_position: Point<Pixels>,
+    start_ratio: f32,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalSizing {
+    viewport: Size<Pixels>,
+    font_size: f32,
+    padding: f32,
+    tile_layout: TileLayout,
+    split_ratio: f32,
+    session_count: usize,
+    tiled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SplitOrientation {
+    Columns,
+    Rows,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -114,6 +146,7 @@ impl From<PersistedUiSettings> for UiSettings {
             tile_layout: value.tile_layout,
             terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
             terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
+            split_ratio: value.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO),
         }
     }
 }
@@ -125,6 +158,7 @@ impl From<UiSettings> for PersistedUiSettings {
             tile_layout: value.tile_layout,
             terminal_font_size: value.terminal_font_size,
             terminal_padding: value.terminal_padding,
+            split_ratio: value.split_ratio,
         }
     }
 }
@@ -137,6 +171,8 @@ struct PersistedUiSettings {
     terminal_font_size: f32,
     #[serde(default = "default_terminal_padding")]
     terminal_padding: f32,
+    #[serde(default = "default_split_ratio")]
+    split_ratio: f32,
 }
 
 struct TerminalSession {
@@ -280,6 +316,7 @@ impl LazytermApp {
             tile_layout: TileLayout::Grid,
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
+            split_ratio: DEFAULT_SPLIT_RATIO,
         });
         let sessions = load_session_summaries(&state_dir)
             .map(|summaries| spawn_persisted_sessions(summaries, branch.clone()))
@@ -309,6 +346,7 @@ impl LazytermApp {
             command_palette_query: String::new(),
             api_events,
             ui_settings,
+            resize_drag: None,
         };
 
         app.keystroke_observer = Some(cx.observe_keystrokes(|this, event, window, cx| {
@@ -436,15 +474,20 @@ impl LazytermApp {
     }
 
     fn resize_sessions(&mut self, viewport: Size<Pixels>) {
-        let size = terminal_size_for_viewport(
-            viewport,
-            self.ui_settings.terminal_font_size,
-            self.ui_settings.terminal_padding,
-            self.ui_settings.tile_layout,
-            self.sessions.len(),
-            self.ui_settings.tile_sessions,
-        );
-        for session in &mut self.sessions {
+        let session_count = self.sessions.len();
+        for (index, session) in self.sessions.iter_mut().enumerate() {
+            let size = terminal_size_for_session(
+                TerminalSizing {
+                    viewport,
+                    font_size: self.ui_settings.terminal_font_size,
+                    padding: self.ui_settings.terminal_padding,
+                    tile_layout: self.ui_settings.tile_layout,
+                    split_ratio: self.ui_settings.split_ratio,
+                    session_count,
+                    tiled: self.ui_settings.tile_sessions,
+                },
+                index,
+            );
             session.resize(size);
         }
     }
@@ -867,6 +910,40 @@ impl LazytermApp {
         self.ui_settings.tile_layout = layout;
         self.ui_settings.tile_sessions = true;
         self.persist_ui_settings();
+    }
+
+    fn start_resize_drag(&mut self, orientation: SplitOrientation, position: Point<Pixels>) {
+        self.resize_drag = Some(ResizeDrag {
+            orientation,
+            start_position: position,
+            start_ratio: self.ui_settings.split_ratio,
+        });
+    }
+
+    fn update_resize_drag(&mut self, position: Point<Pixels>, viewport: Size<Pixels>) -> bool {
+        let Some(drag) = self.resize_drag else {
+            return false;
+        };
+
+        let available = match drag.orientation {
+            SplitOrientation::Columns => (viewport.width.as_f32() - SIDEBAR_WIDTH).max(1.0),
+            SplitOrientation::Rows => (viewport.height.as_f32() - TITLEBAR_HEIGHT).max(1.0),
+        };
+        let delta = match drag.orientation {
+            SplitOrientation::Columns => position.x.as_f32() - drag.start_position.x.as_f32(),
+            SplitOrientation::Rows => position.y.as_f32() - drag.start_position.y.as_f32(),
+        };
+        self.ui_settings.split_ratio =
+            (drag.start_ratio + (delta / available)).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+        true
+    }
+
+    fn stop_resize_drag(&mut self) -> bool {
+        if self.resize_drag.take().is_some() {
+            self.persist_ui_settings();
+            return true;
+        }
+        false
     }
 
     fn split_workspace(&mut self) {
@@ -1349,6 +1426,18 @@ impl LazytermApp {
     }
 
     fn render_tiled_terminals(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.sessions.len() == 2 {
+            match self.ui_settings.tile_layout {
+                TileLayout::Columns => {
+                    return self.render_two_pane_split(SplitOrientation::Columns, cx);
+                }
+                TileLayout::Rows => {
+                    return self.render_two_pane_split(SplitOrientation::Rows, cx);
+                }
+                TileLayout::Grid => {}
+            }
+        }
+
         let columns = tile_columns_for_layout(self.sessions.len(), self.ui_settings.tile_layout);
         let mut tiles = div()
             .grid()
@@ -1363,6 +1452,81 @@ impl LazytermApp {
         }
 
         tiles
+    }
+
+    fn render_two_pane_split(&self, orientation: SplitOrientation, cx: &mut Context<Self>) -> Div {
+        let first_basis = relative(self.ui_settings.split_ratio);
+        let second_basis = relative(1.0 - self.ui_settings.split_ratio);
+        let cursor = match orientation {
+            SplitOrientation::Columns => CursorStyle::ResizeLeftRight,
+            SplitOrientation::Rows => CursorStyle::ResizeUpDown,
+        };
+
+        div()
+            .flex()
+            .when(orientation == SplitOrientation::Columns, |this| {
+                this.flex_row()
+            })
+            .when(orientation == SplitOrientation::Rows, |this| {
+                this.flex_col()
+            })
+            .flex_1()
+            .h_full()
+            .bg(rgb(BG))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .h_full()
+                    .flex_basis(first_basis)
+                    .overflow_hidden()
+                    .child(self.render_terminal_tile(0, cx)),
+            )
+            .child(self.render_resize_handle(orientation, cursor, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .h_full()
+                    .flex_basis(second_basis)
+                    .overflow_hidden()
+                    .child(self.render_terminal_tile(1, cx)),
+            )
+    }
+
+    fn render_resize_handle(
+        &self,
+        orientation: SplitOrientation,
+        cursor: CursorStyle,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex_none()
+            .when(orientation == SplitOrientation::Columns, |this| {
+                this.w(px(RESIZE_HANDLE_SIZE)).h_full()
+            })
+            .when(orientation == SplitOrientation::Rows, |this| {
+                this.h(px(RESIZE_HANDLE_SIZE)).w_full()
+            })
+            .bg(rgb(BORDER))
+            .cursor(cursor)
+            .id("pane-resize-handle")
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.start_resize_drag(orientation, event.position);
+                    this.focus_terminal(window, cx);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.stop_resize_drag() {
+                        cx.notify();
+                    }
+                }),
+            )
     }
 
     fn render_terminal_tile(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2199,6 +2363,19 @@ impl Render for LazytermApp {
             .text_color(rgb(TEXT))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if this.update_resize_drag(event.position, window.viewport_size()) {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.stop_resize_drag() {
+                        cx.notify();
+                    }
+                }),
+            )
             .id("lazyterm-root")
             .on_click(cx.listener(|this, _, window, cx| this.focus_terminal(window, cx)))
             .child(TerminalInputElement { app: cx.entity() })
@@ -2257,6 +2434,83 @@ fn terminal_size_for_viewport(
     TerminalSize::new(columns, rows)
 }
 
+fn terminal_size_for_session(sizing: TerminalSizing, session_index: usize) -> TerminalSize {
+    if sizing.tiled && sizing.session_count == 2 {
+        match sizing.tile_layout {
+            TileLayout::Columns => {
+                return terminal_size_for_split_session(
+                    sizing.viewport,
+                    sizing.font_size,
+                    sizing.padding,
+                    sizing.split_ratio,
+                    SplitOrientation::Columns,
+                    session_index,
+                );
+            }
+            TileLayout::Rows => {
+                return terminal_size_for_split_session(
+                    sizing.viewport,
+                    sizing.font_size,
+                    sizing.padding,
+                    sizing.split_ratio,
+                    SplitOrientation::Rows,
+                    session_index,
+                );
+            }
+            TileLayout::Grid => {}
+        }
+    }
+
+    terminal_size_for_viewport(
+        sizing.viewport,
+        sizing.font_size,
+        sizing.padding,
+        sizing.tile_layout,
+        sizing.session_count,
+        sizing.tiled,
+    )
+}
+
+fn terminal_size_for_split_session(
+    viewport: Size<Pixels>,
+    terminal_font_size: f32,
+    terminal_padding: f32,
+    split_ratio: f32,
+    orientation: SplitOrientation,
+    session_index: usize,
+) -> TerminalSize {
+    let ratio = if session_index == 0 {
+        split_ratio
+    } else {
+        1.0 - split_ratio
+    }
+    .clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+    let width = viewport.width.as_f32();
+    let height = viewport.height.as_f32();
+    let (pane_width, pane_height) = match orientation {
+        SplitOrientation::Columns => (
+            ((width - SIDEBAR_WIDTH - RESIZE_HANDLE_SIZE).max(1.0) * ratio).max(160.0),
+            (height - TITLEBAR_HEIGHT).max(1.0),
+        ),
+        SplitOrientation::Rows => (
+            (width - SIDEBAR_WIDTH).max(160.0),
+            ((height - TITLEBAR_HEIGHT - RESIZE_HANDLE_SIZE).max(1.0) * ratio).max(96.0),
+        ),
+    };
+    let terminal_width = (pane_width - (terminal_padding * 2.0)).max(160.0);
+    let terminal_height =
+        (pane_height - WORKSPACE_BAR_HEIGHT - STATUSLINE_HEIGHT - (terminal_padding * 2.0))
+            .max(96.0);
+    let columns = (terminal_width / terminal_char_width(terminal_font_size))
+        .floor()
+        .max(20.0) as u16;
+    let rows = (terminal_height / terminal_line_height(terminal_font_size))
+        .floor()
+        .max(5.0) as u16;
+
+    TerminalSize::new(columns, rows)
+}
+
 fn app_state_dir() -> PathBuf {
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         return PathBuf::from(local_app_data).join("lazyterm");
@@ -2282,6 +2536,10 @@ fn default_terminal_padding() -> f32 {
 
 fn default_tile_layout() -> TileLayout {
     TileLayout::Grid
+}
+
+fn default_split_ratio() -> f32 {
+    DEFAULT_SPLIT_RATIO
 }
 
 fn load_ui_settings(state_dir: &Path) -> Option<UiSettings> {
@@ -2396,7 +2654,7 @@ fn handle_api_stream(mut stream: TcpStream, sender: &Sender<ApiEvent>) {
         return;
     }
 
-    match response_receiver.recv_timeout(Duration::from_secs(5)) {
+    match response_receiver.recv_timeout(API_RESPONSE_TIMEOUT) {
         Ok(response) => {
             let _ = write_api_response(&mut stream, &response);
         }
@@ -2890,6 +3148,7 @@ mod tests {
             tile_layout: TileLayout::Columns,
             terminal_font_size: 15.0,
             terminal_padding: 22.0,
+            split_ratio: 0.65,
         };
 
         save_ui_settings(&state_dir, settings).expect("settings save");
@@ -2899,6 +3158,7 @@ mod tests {
         assert_eq!(loaded.tile_layout, settings.tile_layout);
         assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
         assert_eq!(loaded.terminal_padding, settings.terminal_padding);
+        assert_eq!(loaded.split_ratio, settings.split_ratio);
         let _ = fs::remove_dir_all(state_dir);
     }
 
@@ -3047,6 +3307,28 @@ mod tests {
 
         assert!(columns.columns < rows.columns);
         assert!(rows.rows < columns.rows);
+    }
+
+    #[test]
+    fn terminal_size_tracks_split_ratio_for_two_panes() {
+        let viewport = Size {
+            width: px(1180.0),
+            height: px(760.0),
+        };
+        let sizing = TerminalSizing {
+            viewport,
+            font_size: 12.0,
+            padding: DEFAULT_TERMINAL_PADDING,
+            tile_layout: TileLayout::Columns,
+            split_ratio: 0.7,
+            session_count: 2,
+            tiled: true,
+        };
+        let first = terminal_size_for_session(sizing, 0);
+        let second = terminal_size_for_session(sizing, 1);
+
+        assert!(first.columns > second.columns);
+        assert_eq!(first.rows, second.rows);
     }
 
     #[test]
