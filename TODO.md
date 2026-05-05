@@ -30,6 +30,9 @@
 - [x] Per-cell foreground/background, bold, dim, inverse, underline, and cursor rendering from Alacritty
 - [x] Regenerated Windows app icon from the black-background Lazyterm logo
 - [x] Tighter monochrome chrome pass: narrow rail, cleaner split mode, and less placeholder copy
+- [x] Clean Windows shell launch with PowerShell profiles disabled by default for faster, predictable agent panes
+- [x] Command palette for pane/session actions instead of a settings sidebar
+- [x] Split command creates a second pane when only one pane exists
 
 ## Next
 
@@ -37,6 +40,7 @@
 - [ ] Replace demo sessions with persisted session state
 - [ ] Add real split-pane resize handles
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
+- [ ] Add searchable command palette input and persistent preferences
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates

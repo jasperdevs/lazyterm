@@ -39,7 +39,7 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const WORKSPACE_BAR_HEIGHT: f32 = 38.0;
 const SIDEBAR_WIDTH: f32 = 76.0;
-const SETTINGS_PANEL_WIDTH: f32 = 220.0;
+const COMMAND_PALETTE_WIDTH: f32 = 320.0;
 const TERMINAL_X_PADDING: f32 = 20.0;
 const TERMINAL_Y_PADDING: f32 = 16.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
@@ -54,7 +54,7 @@ pub struct LazytermApp {
     poller_started: bool,
     initial_focus_done: bool,
     keystroke_observer: Option<Subscription>,
-    settings_open: bool,
+    command_palette_open: bool,
     ui_settings: UiSettings,
 }
 
@@ -158,7 +158,7 @@ impl LazytermApp {
             poller_started: false,
             initial_focus_done: false,
             keystroke_observer: None,
-            settings_open: false,
+            command_palette_open: false,
             ui_settings: UiSettings {
                 tile_sessions: false,
                 terminal_font_size: 12.0,
@@ -259,8 +259,8 @@ impl LazytermApp {
         let modifiers = keystroke.modifiers;
         let primary = modifiers.platform || (modifiers.control && modifiers.shift);
 
-        if self.settings_open && key == "escape" {
-            self.settings_open = false;
+        if self.command_palette_open && key == "escape" {
+            self.command_palette_open = false;
             return true;
         }
 
@@ -286,12 +286,12 @@ impl LazytermApp {
                     self.copy_active_transcript(cx);
                     return true;
                 }
-                "," => {
-                    self.toggle_settings();
+                "p" | "k" | "," => {
+                    self.toggle_command_palette();
                     return true;
                 }
                 "b" => {
-                    self.toggle_tile_sessions();
+                    self.split_workspace();
                     return true;
                 }
                 "+" | "=" => {
@@ -486,6 +486,13 @@ impl LazytermApp {
         self.ui_settings.tile_sessions = !self.ui_settings.tile_sessions;
     }
 
+    fn split_workspace(&mut self) {
+        if self.sessions.len() == 1 {
+            self.create_terminal();
+        }
+        self.ui_settings.tile_sessions = true;
+    }
+
     fn focus_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }
@@ -502,8 +509,8 @@ impl LazytermApp {
             .unwrap_or_else(|| self.cwd.display().to_string())
     }
 
-    fn toggle_settings(&mut self) {
-        self.settings_open = !self.settings_open;
+    fn toggle_command_palette(&mut self) {
+        self.command_palette_open = !self.command_palette_open;
     }
 
     fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -555,12 +562,16 @@ impl LazytermApp {
                         "titlebar-layout",
                         cx,
                         |this, _| {
-                            this.toggle_tile_sessions();
+                            if this.ui_settings.tile_sessions {
+                                this.toggle_tile_sessions();
+                            } else {
+                                this.split_workspace();
+                            }
                         },
                     ))
                     .child(
                         self.render_titlebar_button(":", "titlebar-settings", cx, |this, _| {
-                            this.toggle_settings();
+                            this.toggle_command_palette();
                         }),
                     )
                     .child(
@@ -887,16 +898,17 @@ impl LazytermApp {
             )
     }
 
-    fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
-            .w(px(SETTINGS_PANEL_WIDTH))
-            .h_full()
-            .border_l_1()
+            .w(px(COMMAND_PALETTE_WIDTH))
+            .rounded(px(10.0))
+            .border_1()
             .border_color(rgb(BORDER))
-            .bg(rgb(SIDEBAR))
+            .bg(rgb(SURFACE))
             .font_family("JetBrains Mono")
+            .overflow_hidden()
             .child(
                 div()
                     .flex()
@@ -910,7 +922,7 @@ impl LazytermApp {
                         div()
                             .text_color(rgb(TEXT))
                             .text_size(px(12.0))
-                            .child("view"),
+                            .child("commands"),
                     )
                     .child(
                         div()
@@ -925,9 +937,9 @@ impl LazytermApp {
                             .text_color(rgb(TEXT_MUTED))
                             .text_size(px(12.0))
                             .child("x")
-                            .id("settings-close")
+                            .id("command-palette-close")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.settings_open = false;
+                                this.command_palette_open = false;
                                 this.focus_terminal(window, cx);
                                 cx.notify();
                             })),
@@ -939,35 +951,79 @@ impl LazytermApp {
                     .flex_col()
                     .gap_2()
                     .p_3()
-                    .child(self.render_toggle_row(
-                        "panes",
-                        self.ui_settings.tile_sessions,
-                        "settings-tile-sessions",
+                    .child(self.render_command_action(
+                        "new shell",
+                        "ctrl+shift+t",
+                        "command-new-shell",
                         cx,
-                        |this| {
-                            this.ui_settings.tile_sessions = !this.ui_settings.tile_sessions;
+                        |this, _, _| this.create_terminal(),
+                    ))
+                    .child(self.render_command_action(
+                        "split pane",
+                        "ctrl+shift+b",
+                        "command-split-pane",
+                        cx,
+                        |this, _, _| this.split_workspace(),
+                    ))
+                    .child(self.render_command_action(
+                        if self.ui_settings.tile_sessions {
+                            "single pane"
+                        } else {
+                            "tile panes"
                         },
+                        "ctrl+shift+b",
+                        "command-toggle-layout",
+                        cx,
+                        |this, _, _| this.toggle_tile_sessions(),
+                    ))
+                    .child(self.render_command_action(
+                        "restart pane",
+                        "ctrl+shift+r",
+                        "command-restart-pane",
+                        cx,
+                        |this, _, _| this.restart_active_terminal(),
+                    ))
+                    .child(self.render_command_action(
+                        "close pane",
+                        "ctrl+shift+w",
+                        "command-close-pane",
+                        cx,
+                        |this, _, _| this.close_active_terminal(),
+                    ))
+                    .child(self.render_command_action(
+                        "copy transcript",
+                        "ctrl+shift+c",
+                        "command-copy-transcript",
+                        cx,
+                        |this, _, cx| this.copy_active_transcript(cx),
+                    ))
+                    .child(self.render_command_action(
+                        "paste",
+                        "ctrl+shift+v",
+                        "command-paste",
+                        cx,
+                        |this, _, cx| this.paste_clipboard(cx),
                     ))
                     .child(self.render_font_size_row(cx)),
             )
     }
 
-    fn render_toggle_row(
+    fn render_command_action(
         &self,
         label: &'static str,
-        active: bool,
+        shortcut: &'static str,
         id: &'static str,
         cx: &mut Context<Self>,
-        action: impl Fn(&mut Self) + 'static,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
         div()
             .flex()
             .items_center()
             .justify_between()
-            .h(px(40.0))
+            .min_h(px(36.0))
             .px_3()
             .rounded(px(7.0))
-            .bg(rgb(SURFACE))
+            .bg(rgb(BG))
             .border_1()
             .border_color(rgb(BORDER))
             .child(
@@ -981,19 +1037,14 @@ impl LazytermApp {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(42.0))
-                    .h(px(24.0))
-                    .rounded(px(6.0))
-                    .bg(rgb(if active { ROW_ACTIVE } else { BG }))
-                    .border_1()
-                    .border_color(rgb(if active { BORDER_ACTIVE } else { BORDER }))
-                    .text_color(rgb(if active { TEXT } else { TEXT_DIM }))
+                    .text_color(rgb(TEXT_DIM))
                     .text_size(px(11.0))
-                    .child(if active { "on" } else { "off" }),
+                    .child(shortcut),
             )
             .id(id)
             .on_click(cx.listener(move |this, _, window, cx| {
-                action(this);
+                action(this, window, cx);
+                this.command_palette_open = false;
                 this.focus_terminal(window, cx);
                 cx.notify();
             }))
@@ -1004,10 +1055,10 @@ impl LazytermApp {
             .flex()
             .items_center()
             .justify_between()
-            .h(px(40.0))
+            .min_h(px(36.0))
             .px_3()
             .rounded(px(7.0))
-            .bg(rgb(SURFACE))
+            .bg(rgb(BG))
             .border_1()
             .border_color(rgb(BORDER))
             .child(
@@ -1532,14 +1583,13 @@ impl Render for LazytermApp {
                     .overflow_hidden()
                     .child(self.render_sidebar(cx))
                     .child(self.render_terminal_workspace(self.focus_handle.is_focused(window), cx))
-                    .when(self.settings_open, |this| {
+                    .when(self.command_palette_open, |this| {
                         this.child(
                             div()
                                 .absolute()
-                                .top(px(0.0))
-                                .right(px(0.0))
-                                .bottom(px(0.0))
-                                .child(self.render_settings_panel(cx)),
+                                .top(px(44.0))
+                                .right(px(12.0))
+                                .child(self.render_command_palette(cx)),
                         )
                     }),
             )

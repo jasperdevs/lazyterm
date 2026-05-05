@@ -57,11 +57,17 @@ fn default_windows_shell_with(
     has_powershell: bool,
 ) -> (String, Vec<String>) {
     if has_pwsh {
-        return ("pwsh.exe".into(), vec!["-NoLogo".into()]);
+        return (
+            "pwsh.exe".into(),
+            vec!["-NoLogo".into(), "-NoProfile".into()],
+        );
     }
 
     if has_powershell {
-        return ("powershell.exe".into(), vec!["-NoLogo".into()]);
+        return (
+            "powershell.exe".into(),
+            vec!["-NoLogo".into(), "-NoProfile".into()],
+        );
     }
 
     (comspec.unwrap_or_else(|| "cmd.exe".into()), Vec::new())
@@ -247,11 +253,17 @@ mod tests {
     fn windows_default_shell_prefers_powershell() {
         assert_eq!(
             default_windows_shell_with(Some("cmd.exe".into()), true, true),
-            ("pwsh.exe".into(), vec!["-NoLogo".into()])
+            (
+                "pwsh.exe".into(),
+                vec!["-NoLogo".into(), "-NoProfile".into()]
+            )
         );
         assert_eq!(
             default_windows_shell_with(Some("cmd.exe".into()), false, true),
-            ("powershell.exe".into(), vec!["-NoLogo".into()])
+            (
+                "powershell.exe".into(),
+                vec!["-NoLogo".into(), "-NoProfile".into()]
+            )
         );
     }
 
