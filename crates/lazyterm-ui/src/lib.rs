@@ -109,6 +109,23 @@ struct TerminalSizing {
     tiled: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TerminalContentBounds {
+    origin: Point<Pixels>,
+    columns: u16,
+    rows: u16,
+    cell_width: f32,
+    line_height: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TerminalMouseInput {
+    position: Point<Pixels>,
+    button: Option<MouseButton>,
+    modifiers: gpui::Modifiers,
+    action: MouseReportAction,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SplitOrientation {
     Columns,
@@ -255,6 +272,15 @@ enum PaneDirection {
     Right,
     Up,
     Down,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MouseReportAction {
+    Press,
+    Release,
+    Move,
+    ScrollUp,
+    ScrollDown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -821,6 +847,7 @@ impl LazytermApp {
         &mut self,
         session_index: usize,
         event: &ScrollWheelEvent,
+        viewport: Size<Pixels>,
     ) -> bool {
         let line_height = px(terminal_line_height(self.ui_settings.terminal_font_size));
         let lines = match event.delta {
@@ -833,6 +860,16 @@ impl LazytermApp {
         }
 
         self.active_session = session_index;
+        if self.report_terminal_mouse_scroll(
+            session_index,
+            event.position,
+            event.modifiers,
+            viewport,
+            lines,
+        ) {
+            return true;
+        }
+
         if self.sessions[session_index].uses_alternate_scroll() && !event.modifiers.shift {
             let bytes = alternate_scroll_bytes(lines);
             self.write_bytes_to_session(session_index, &bytes);
@@ -841,6 +878,104 @@ impl LazytermApp {
 
         self.sessions[session_index].scroll_display(Scroll::Delta(lines));
         true
+    }
+
+    fn report_terminal_mouse_input(
+        &mut self,
+        session_index: usize,
+        input: TerminalMouseInput,
+        viewport: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.focus_terminal(window, cx);
+        self.report_terminal_mouse(session_index, input, viewport)
+    }
+
+    fn report_terminal_mouse_scroll(
+        &mut self,
+        session_index: usize,
+        position: Point<Pixels>,
+        modifiers: gpui::Modifiers,
+        viewport: Size<Pixels>,
+        lines: i32,
+    ) -> bool {
+        if session_index >= self.sessions.len() {
+            return false;
+        }
+
+        let mode = self.sessions[session_index].mouse_mode();
+        if !terminal_mouse_mode_enabled(mode) {
+            return false;
+        }
+
+        let sizing = self.terminal_sizing(viewport);
+        let bounds = terminal_content_bounds_for_session(sizing, session_index);
+        let Some((column, row)) = terminal_point_for_mouse(position, bounds) else {
+            return false;
+        };
+        let Some(bytes) = terminal_mouse_scroll_report_bytes(column, row, lines, modifiers, mode)
+        else {
+            return false;
+        };
+
+        self.write_bytes_to_session(session_index, &bytes);
+        true
+    }
+
+    fn report_terminal_mouse(
+        &mut self,
+        session_index: usize,
+        input: TerminalMouseInput,
+        viewport: Size<Pixels>,
+    ) -> bool {
+        if session_index >= self.sessions.len() {
+            return false;
+        }
+
+        let mode = self.sessions[session_index].mouse_mode();
+        if !terminal_mouse_mode_enabled(mode) {
+            return false;
+        }
+
+        if input.action == MouseReportAction::Move
+            && !terminal_mouse_move_enabled(mode, input.button.is_some())
+        {
+            return false;
+        }
+
+        let sizing = self.terminal_sizing(viewport);
+        let bounds = terminal_content_bounds_for_session(sizing, session_index);
+        let Some((column, row)) = terminal_point_for_mouse(input.position, bounds) else {
+            return false;
+        };
+
+        let Some(bytes) = terminal_mouse_report_bytes(
+            column,
+            row,
+            input.button,
+            input.action,
+            input.modifiers,
+            mode,
+        ) else {
+            return false;
+        };
+
+        self.active_session = session_index;
+        self.write_bytes_to_session(session_index, &bytes);
+        true
+    }
+
+    fn terminal_sizing(&self, viewport: Size<Pixels>) -> TerminalSizing {
+        TerminalSizing {
+            viewport,
+            font_size: self.ui_settings.terminal_font_size,
+            padding: self.ui_settings.terminal_padding,
+            tile_layout: self.ui_settings.tile_layout,
+            split_ratio: self.ui_settings.split_ratio,
+            session_count: self.sessions.len(),
+            tiled: self.ui_settings.tile_sessions,
+        }
     }
 
     fn write_text_to_session(&mut self, session_index: usize, text: &str, enter: bool) {
@@ -1783,13 +1918,156 @@ impl LazytermApp {
                     .id("terminal-transcript")
                     .overflow_y_scroll()
                     .on_scroll_wheel(cx.listener(
-                        move |this, event: &ScrollWheelEvent, _window, cx| {
-                            if this.scroll_terminal_from_wheel(session_index, event) {
+                        move |this, event: &ScrollWheelEvent, window, cx| {
+                            if this.scroll_terminal_from_wheel(
+                                session_index,
+                                event,
+                                window.viewport_size(),
+                            ) {
                                 cx.stop_propagation();
                                 cx.notify();
                             }
                         },
                     ))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            if this.report_terminal_mouse_input(
+                                session_index,
+                                TerminalMouseInput {
+                                    position: event.position,
+                                    button: Some(MouseButton::Left),
+                                    modifiers: event.modifiers,
+                                    action: MouseReportAction::Press,
+                                },
+                                window.viewport_size(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            if this.report_terminal_mouse_input(
+                                session_index,
+                                TerminalMouseInput {
+                                    position: event.position,
+                                    button: Some(MouseButton::Middle),
+                                    modifiers: event.modifiers,
+                                    action: MouseReportAction::Press,
+                                },
+                                window.viewport_size(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            if this.report_terminal_mouse_input(
+                                session_index,
+                                TerminalMouseInput {
+                                    position: event.position,
+                                    button: Some(MouseButton::Right),
+                                    modifiers: event.modifiers,
+                                    action: MouseReportAction::Press,
+                                },
+                                window.viewport_size(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                            if this.report_terminal_mouse_input(
+                                session_index,
+                                TerminalMouseInput {
+                                    position: event.position,
+                                    button: Some(MouseButton::Left),
+                                    modifiers: event.modifiers,
+                                    action: MouseReportAction::Release,
+                                },
+                                window.viewport_size(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                            if this.report_terminal_mouse_input(
+                                session_index,
+                                TerminalMouseInput {
+                                    position: event.position,
+                                    button: Some(MouseButton::Middle),
+                                    modifiers: event.modifiers,
+                                    action: MouseReportAction::Release,
+                                },
+                                window.viewport_size(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                            if this.report_terminal_mouse_input(
+                                session_index,
+                                TerminalMouseInput {
+                                    position: event.position,
+                                    button: Some(MouseButton::Right),
+                                    modifiers: event.modifiers,
+                                    action: MouseReportAction::Release,
+                                },
+                                window.viewport_size(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_mouse_move(
+                        cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
+                            if this.report_terminal_mouse_input(
+                                session_index,
+                                TerminalMouseInput {
+                                    position: event.position,
+                                    button: event.pressed_button,
+                                    modifiers: event.modifiers,
+                                    action: MouseReportAction::Move,
+                                },
+                                window.viewport_size(),
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .child(terminal_grid),
             )
             .child(self.render_statusline(session_index, focused))
@@ -2187,6 +2465,10 @@ impl TerminalSession {
     fn uses_app_cursor(&self) -> bool {
         self.terminal.uses_app_cursor()
     }
+
+    fn mouse_mode(&self) -> TermMode {
+        self.terminal.mode()
+    }
 }
 
 impl TerminalGrid {
@@ -2227,6 +2509,10 @@ impl TerminalGrid {
 
     fn uses_app_cursor(&self) -> bool {
         self.term.mode().contains(TermMode::APP_CURSOR)
+    }
+
+    fn mode(&self) -> TermMode {
+        *self.term.mode()
     }
 
     #[cfg(test)]
@@ -2654,6 +2940,91 @@ fn terminal_size_for_session(sizing: TerminalSizing, session_index: usize) -> Te
     )
 }
 
+fn terminal_content_bounds_for_session(
+    sizing: TerminalSizing,
+    session_index: usize,
+) -> TerminalContentBounds {
+    let size = terminal_size_for_session(sizing, session_index);
+    let cell_width = terminal_char_width(sizing.font_size);
+    let line_height = terminal_line_height(sizing.font_size);
+    let content_width = (sizing.viewport.width.as_f32() - SIDEBAR_WIDTH).max(1.0);
+    let content_height = (sizing.viewport.height.as_f32() - TITLEBAR_HEIGHT).max(1.0);
+    let padding = sizing.padding;
+
+    let (pane_x, pane_y) = if sizing.tiled && sizing.session_count == 2 {
+        match sizing.tile_layout {
+            TileLayout::Columns => {
+                let split_width = (content_width - RESIZE_HANDLE_SIZE).max(1.0);
+                let first_width =
+                    split_width * sizing.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+                if session_index == 0 {
+                    (SIDEBAR_WIDTH, TITLEBAR_HEIGHT)
+                } else {
+                    (
+                        SIDEBAR_WIDTH + first_width + RESIZE_HANDLE_SIZE,
+                        TITLEBAR_HEIGHT,
+                    )
+                }
+            }
+            TileLayout::Rows => {
+                let split_height = (content_height - RESIZE_HANDLE_SIZE).max(1.0);
+                let first_height =
+                    split_height * sizing.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+                if session_index == 0 {
+                    (SIDEBAR_WIDTH, TITLEBAR_HEIGHT)
+                } else {
+                    (
+                        SIDEBAR_WIDTH,
+                        TITLEBAR_HEIGHT + first_height + RESIZE_HANDLE_SIZE,
+                    )
+                }
+            }
+            TileLayout::Grid => {
+                grid_pane_origin(sizing, session_index, content_width, content_height)
+            }
+        }
+    } else if sizing.tiled {
+        grid_pane_origin(sizing, session_index, content_width, content_height)
+    } else {
+        (SIDEBAR_WIDTH, TITLEBAR_HEIGHT)
+    };
+
+    TerminalContentBounds {
+        origin: Point {
+            x: px(pane_x + padding),
+            y: px(pane_y + padding),
+        },
+        columns: size.columns,
+        rows: size.rows,
+        cell_width,
+        line_height,
+    }
+}
+
+fn grid_pane_origin(
+    sizing: TerminalSizing,
+    session_index: usize,
+    content_width: f32,
+    content_height: f32,
+) -> (f32, f32) {
+    let pane_count = if sizing.tiled {
+        sizing.session_count.max(1)
+    } else {
+        1
+    };
+    let columns = tile_columns_for_layout(pane_count, sizing.tile_layout).max(1);
+    let rows = pane_count.div_ceil(columns).max(1);
+    let column = session_index.min(pane_count - 1) % columns;
+    let row = session_index.min(pane_count - 1) / columns;
+    let tile_width = content_width / columns as f32;
+    let tile_height = content_height / rows as f32;
+
+    (
+        SIDEBAR_WIDTH + tile_width * column as f32,
+        TITLEBAR_HEIGHT + tile_height * row as f32,
+    )
+}
+
 fn terminal_size_for_split_session(
     viewport: Size<Pixels>,
     terminal_font_size: f32,
@@ -2986,6 +3357,153 @@ fn alternate_scroll_bytes(lines: i32) -> Vec<u8> {
         bytes.extend_from_slice(&[0x1b, b'O', command]);
     }
     bytes
+}
+
+fn terminal_point_for_mouse(
+    position: Point<Pixels>,
+    bounds: TerminalContentBounds,
+) -> Option<(u16, u16)> {
+    let x = position.x.as_f32() - bounds.origin.x.as_f32();
+    let y = position.y.as_f32() - bounds.origin.y.as_f32();
+    if x < 0.0 || y < 0.0 || bounds.columns == 0 || bounds.rows == 0 {
+        return None;
+    }
+
+    let column = ((x / bounds.cell_width).floor() as u16).min(bounds.columns - 1);
+    let row = ((y / bounds.line_height).floor() as u16).min(bounds.rows - 1);
+    Some((column, row))
+}
+
+fn terminal_mouse_mode_enabled(mode: TermMode) -> bool {
+    mode.intersects(TermMode::MOUSE_MODE)
+}
+
+fn terminal_mouse_move_enabled(mode: TermMode, dragging: bool) -> bool {
+    if mode.contains(TermMode::MOUSE_MOTION) {
+        return true;
+    }
+
+    dragging && mode.contains(TermMode::MOUSE_DRAG)
+}
+
+fn terminal_mouse_report_bytes(
+    column: u16,
+    row: u16,
+    button: Option<MouseButton>,
+    action: MouseReportAction,
+    modifiers: gpui::Modifiers,
+    mode: TermMode,
+) -> Option<Vec<u8>> {
+    let code = mouse_button_code(button, action)?;
+    let code = code + mouse_modifier_code(modifiers);
+    if mode.contains(TermMode::SGR_MOUSE) {
+        return Some(sgr_mouse_report(
+            column,
+            row,
+            code,
+            action != MouseReportAction::Release,
+        ));
+    }
+
+    let utf8 = mode.contains(TermMode::UTF8_MOUSE);
+    let normal_code = if action == MouseReportAction::Release {
+        3 + mouse_modifier_code(modifiers)
+    } else {
+        code
+    };
+    normal_mouse_report(column, row, normal_code, utf8)
+}
+
+fn terminal_mouse_scroll_report_bytes(
+    column: u16,
+    row: u16,
+    lines: i32,
+    modifiers: gpui::Modifiers,
+    mode: TermMode,
+) -> Option<Vec<u8>> {
+    if lines == 0 {
+        return None;
+    }
+
+    let action = if lines > 0 {
+        MouseReportAction::ScrollUp
+    } else {
+        MouseReportAction::ScrollDown
+    };
+    let report = terminal_mouse_report_bytes(column, row, None, action, modifiers, mode)?;
+    let mut bytes = Vec::with_capacity(report.len() * lines.unsigned_abs() as usize);
+    for _ in 0..lines.abs() {
+        bytes.extend_from_slice(&report);
+    }
+    Some(bytes)
+}
+
+fn mouse_button_code(button: Option<MouseButton>, action: MouseReportAction) -> Option<u8> {
+    match action {
+        MouseReportAction::Press => match button? {
+            MouseButton::Left => Some(0),
+            MouseButton::Middle => Some(1),
+            MouseButton::Right => Some(2),
+            MouseButton::Navigate(_) => None,
+        },
+        MouseReportAction::Release => match button {
+            Some(MouseButton::Left) => Some(0),
+            Some(MouseButton::Middle) => Some(1),
+            Some(MouseButton::Right) => Some(2),
+            Some(MouseButton::Navigate(_)) => None,
+            None => Some(3),
+        },
+        MouseReportAction::Move => match button {
+            Some(MouseButton::Left) => Some(32),
+            Some(MouseButton::Middle) => Some(33),
+            Some(MouseButton::Right) => Some(34),
+            Some(MouseButton::Navigate(_)) => None,
+            None => Some(35),
+        },
+        MouseReportAction::ScrollUp => Some(64),
+        MouseReportAction::ScrollDown => Some(65),
+    }
+}
+
+fn mouse_modifier_code(modifiers: gpui::Modifiers) -> u8 {
+    let mut code = 0;
+    if modifiers.shift {
+        code += 4;
+    }
+    if modifiers.alt {
+        code += 8;
+    }
+    if modifiers.control {
+        code += 16;
+    }
+    code
+}
+
+fn normal_mouse_report(column: u16, row: u16, code: u8, utf8: bool) -> Option<Vec<u8>> {
+    let max_point = if utf8 { 2015 } else { 223 };
+    if column >= max_point || row >= max_point {
+        return None;
+    }
+
+    let mut bytes = vec![b'\x1b', b'[', b'M', 32 + code];
+    append_normal_mouse_position(&mut bytes, column as usize, utf8);
+    append_normal_mouse_position(&mut bytes, row as usize, utf8);
+    Some(bytes)
+}
+
+fn append_normal_mouse_position(bytes: &mut Vec<u8>, position: usize, utf8: bool) {
+    if utf8 && position >= 95 {
+        let encoded = 32 + 1 + position;
+        bytes.push((0xc0 + encoded / 64) as u8);
+        bytes.push((0x80 + (encoded & 63)) as u8);
+    } else {
+        bytes.push(32 + 1 + position as u8);
+    }
+}
+
+fn sgr_mouse_report(column: u16, row: u16, code: u8, pressed: bool) -> Vec<u8> {
+    let terminator = if pressed { 'M' } else { 'm' };
+    format!("\x1b[<{code};{};{}{terminator}", column + 1, row + 1).into_bytes()
 }
 
 fn paste_bytes_for_terminal(text: &str, bracketed: bool) -> Vec<u8> {
@@ -3801,6 +4319,152 @@ mod tests {
         assert_eq!(cursor_key_bytes(b'H', true), b"\x1bOH");
         assert_eq!(cursor_key_bytes(b'F', false), b"\x1b[F");
         assert_eq!(cursor_key_bytes(b'F', true), b"\x1bOF");
+    }
+
+    #[test]
+    fn terminal_mouse_point_uses_terminal_content_origin() {
+        let bounds = TerminalContentBounds {
+            origin: Point {
+                x: px(196.0),
+                y: px(48.0),
+            },
+            columns: 80,
+            rows: 24,
+            cell_width: 8.0,
+            line_height: 18.0,
+        };
+
+        assert_eq!(
+            terminal_point_for_mouse(
+                Point {
+                    x: px(196.0),
+                    y: px(48.0)
+                },
+                bounds
+            ),
+            Some((0, 0))
+        );
+        assert_eq!(
+            terminal_point_for_mouse(
+                Point {
+                    x: px(220.0),
+                    y: px(84.0)
+                },
+                bounds
+            ),
+            Some((3, 2))
+        );
+        assert_eq!(
+            terminal_point_for_mouse(
+                Point {
+                    x: px(1200.0),
+                    y: px(900.0)
+                },
+                bounds
+            ),
+            Some((79, 23))
+        );
+    }
+
+    #[test]
+    fn terminal_content_bounds_track_split_pane_origins() {
+        let sizing = TerminalSizing {
+            viewport: Size {
+                width: px(1180.0),
+                height: px(760.0),
+            },
+            font_size: 12.0,
+            padding: DEFAULT_TERMINAL_PADDING,
+            tile_layout: TileLayout::Columns,
+            split_ratio: 0.7,
+            session_count: 2,
+            tiled: true,
+        };
+
+        let first = terminal_content_bounds_for_session(sizing, 0);
+        let second = terminal_content_bounds_for_session(sizing, 1);
+
+        assert_eq!(first.origin.x, px(SIDEBAR_WIDTH + DEFAULT_TERMINAL_PADDING));
+        assert!(second.origin.x > first.origin.x);
+        assert_eq!(first.origin.y, second.origin.y);
+        assert!(first.columns > second.columns);
+    }
+
+    #[test]
+    fn terminal_mouse_reports_sgr_press_and_release() {
+        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+
+        assert_eq!(
+            terminal_mouse_report_bytes(
+                2,
+                4,
+                Some(MouseButton::Left),
+                MouseReportAction::Press,
+                gpui::Modifiers::default(),
+                mode,
+            ),
+            Some(b"\x1b[<0;3;5M".to_vec())
+        );
+        assert_eq!(
+            terminal_mouse_report_bytes(
+                2,
+                4,
+                Some(MouseButton::Left),
+                MouseReportAction::Release,
+                gpui::Modifiers::default(),
+                mode,
+            ),
+            Some(b"\x1b[<0;3;5m".to_vec())
+        );
+    }
+
+    #[test]
+    fn terminal_mouse_reports_x10_press_and_drag() {
+        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG;
+
+        assert_eq!(
+            terminal_mouse_report_bytes(
+                0,
+                0,
+                Some(MouseButton::Right),
+                MouseReportAction::Press,
+                gpui::Modifiers::default(),
+                mode,
+            ),
+            Some(b"\x1b[M\"!!".to_vec())
+        );
+        assert_eq!(
+            terminal_mouse_report_bytes(
+                0,
+                0,
+                Some(MouseButton::Left),
+                MouseReportAction::Move,
+                gpui::Modifiers::default(),
+                mode,
+            ),
+            Some(b"\x1b[M@!!".to_vec())
+        );
+        assert!(terminal_mouse_move_enabled(mode, true));
+        assert!(!terminal_mouse_move_enabled(mode, false));
+    }
+
+    #[test]
+    fn terminal_mouse_scroll_report_repeats_wheel_button() {
+        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+
+        assert_eq!(
+            terminal_mouse_scroll_report_bytes(
+                1,
+                2,
+                -2,
+                gpui::Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                mode,
+            ),
+            Some(b"\x1b[<69;2;3M\x1b[<69;2;3M".to_vec())
+        );
     }
 
     #[test]

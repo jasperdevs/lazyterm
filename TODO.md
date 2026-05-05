@@ -65,7 +65,7 @@
 
 ## Next
 
-- [ ] Add click/drag mouse reporting for full-screen TUI apps
+- [x] Add click/drag mouse reporting for full-screen TUI apps
 - [ ] Extend resize handles beyond two-pane layouts
 - [ ] Add agent pane presets with arguments and working-directory prompts
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
