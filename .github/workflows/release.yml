@@ -41,6 +41,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build release binaries
         run: cargo build --workspace --release --locked
+      - name: Sign Windows binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_P12_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_P12_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_P12_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
+            Write-Host "Windows signing secrets are not configured; packaging unsigned binaries."
+            exit 0
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "lazyterm-signing.p12"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_P12_BASE64))
+
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "\\x64\\signtool.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+
+          if (-not $signtool) {
+            throw "signtool.exe was not found on the Windows runner."
+          }
+
+          & $signtool.FullName sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $certPath /p $env:WINDOWS_SIGNING_CERT_PASSWORD target/release/lazyterm.exe target/release/lazytermctl.exe
+          & $signtool.FullName verify /pa target/release/lazyterm.exe target/release/lazytermctl.exe
+          Remove-Item -LiteralPath $certPath -Force
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -75,6 +102,11 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Create release checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum lazyterm-* > SHA256SUMS
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*

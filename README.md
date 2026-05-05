@@ -34,6 +34,8 @@ cargo build --workspace --release --locked
 
 The installer copies the app into `%LOCALAPPDATA%\Programs\Lazyterm`, creates app shortcuts, and adds `lazytermctl` to the user PATH.
 
+Release assets include `SHA256SUMS`. Windows binaries are Authenticode-signed when the repository signing certificate secrets are configured.
+
 ## License
 
 Apache-2.0.

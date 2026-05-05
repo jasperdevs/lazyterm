@@ -16,10 +16,11 @@
 - [x] Add a Windows local installer with app shortcuts and PATH setup
 - [x] Move window controls out of the rail and add a larger drag gesture target
 - [x] Add true fullscreen window control
+- [x] Add release checksums and optional Windows signing
 
 ## Next
 
-- [ ] Add signed release artifacts
+- [ ] Configure production signing certificates and notarization secrets
 
 ## Done Recently
 
