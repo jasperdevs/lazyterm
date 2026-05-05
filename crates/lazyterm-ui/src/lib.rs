@@ -334,6 +334,34 @@ enum CommandKind {
     ScrollBottom,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IconKind {
+    NewPane,
+    SplitLayout,
+    CommandPalette,
+    Close,
+}
+
+impl IconKind {
+    fn asset_path(self) -> &'static str {
+        match self {
+            Self::NewPane => "icons/plus.svg",
+            Self::SplitLayout => "icons/split.svg",
+            Self::CommandPalette => "icons/command.svg",
+            Self::Close => "icons/close.svg",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::NewPane => "new pane",
+            Self::SplitLayout => "toggle split layout",
+            Self::CommandPalette => "command palette",
+            Self::Close => "close window",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CommandItem {
     kind: CommandKind,
@@ -1589,17 +1617,16 @@ impl LazytermApp {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(
-                        self.render_titlebar_button("+", "titlebar-new", cx, |this, _| {
-                            this.create_terminal();
-                        }),
-                    )
                     .child(self.render_titlebar_button(
-                        if self.ui_settings.tile_sessions {
-                            "1"
-                        } else {
-                            "2"
+                        IconKind::NewPane,
+                        "titlebar-new",
+                        cx,
+                        |this, _| {
+                            this.create_terminal();
                         },
+                    ))
+                    .child(self.render_titlebar_button(
+                        IconKind::SplitLayout,
                         "titlebar-layout",
                         cx,
                         |this, _| {
@@ -1610,22 +1637,28 @@ impl LazytermApp {
                             }
                         },
                     ))
-                    .child(
-                        self.render_titlebar_button(":", "titlebar-command", cx, |this, _| {
+                    .child(self.render_titlebar_button(
+                        IconKind::CommandPalette,
+                        "titlebar-command",
+                        cx,
+                        |this, _| {
                             this.toggle_command_palette();
-                        }),
-                    )
-                    .child(
-                        self.render_titlebar_button("x", "window-close", cx, |_, window| {
+                        },
+                    ))
+                    .child(self.render_titlebar_button(
+                        IconKind::Close,
+                        "window-close",
+                        cx,
+                        |_, window| {
                             window.remove_window();
-                        }),
-                    ),
+                        },
+                    )),
             )
     }
 
     fn render_titlebar_button(
         &self,
-        label: &'static str,
+        icon: IconKind,
         id: &'static str,
         cx: &mut Context<Self>,
         action: impl Fn(&mut Self, &mut Window) + 'static,
@@ -1640,14 +1673,16 @@ impl LazytermApp {
             .border_1()
             .border_color(rgb(BORDER))
             .bg(rgb(BG))
-            .when(label == "x", |this| {
+            .when(icon == IconKind::Close, |this| {
                 this.window_control_area(WindowControlArea::Close)
             })
             .hover(|this| this.bg(rgb(ROW_ACTIVE)).border_color(rgb(TEXT_DIM)))
-            .text_color(rgb(TEXT_SOFT))
-            .font_family("JetBrains Mono")
-            .text_size(px(12.0))
-            .child(label)
+            .child(
+                img(icon.asset_path())
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .id(format!("{}-icon", icon.label())),
+            )
             .id(id)
             .on_click(cx.listener(move |this, _, window, cx| {
                 action(this, window);
@@ -4059,6 +4094,14 @@ mod tests {
         };
 
         assert_eq!(command_label(&command), "pwsh.exe -NoLogo -NoProfile");
+    }
+
+    #[test]
+    fn icon_assets_are_stable_svg_paths() {
+        assert_eq!(IconKind::NewPane.asset_path(), "icons/plus.svg");
+        assert_eq!(IconKind::SplitLayout.asset_path(), "icons/split.svg");
+        assert_eq!(IconKind::CommandPalette.asset_path(), "icons/command.svg");
+        assert_eq!(IconKind::Close.asset_path(), "icons/close.svg");
     }
 
     #[test]

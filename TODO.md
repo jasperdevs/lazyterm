@@ -68,7 +68,7 @@
 - [x] Add click/drag mouse reporting for full-screen TUI apps
 - [x] Extend resize handles beyond two-pane layouts
 - [x] Add agent pane presets with arguments and working-directory prompts
-- [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
+- [x] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
 - [x] Add installer/release workflow after the app can launch and render reliably
 - [x] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates
