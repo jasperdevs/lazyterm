@@ -2777,9 +2777,12 @@ impl Element for TerminalInputElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = px(0.0).into();
-        style.size.height = px(0.0).into();
+        let mut style = Style {
+            position: gpui::Position::Absolute,
+            ..Default::default()
+        };
+        style.size.width = relative(1.0).into();
+        style.size.height = relative(1.0).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -2933,6 +2936,7 @@ impl Render for LazytermApp {
         div()
             .flex()
             .flex_col()
+            .relative()
             .size_full()
             .rounded(px(10.0))
             .overflow_hidden()
