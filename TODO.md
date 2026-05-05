@@ -7,11 +7,13 @@
 - [x] Regenerate the Windows `.ico` from the black-background logo
 - [x] Hide settings/preference commands from the empty command palette
 - [x] Keep shell input focused through the full-window text target
+- [x] Move custom window controls into the rail header with real SVG icons
+- [x] Add tooltips for rail/window controls
+- [x] Audit common terminal editing chords against native terminal defaults
+- [x] Add stronger shortcut coverage for paste and window/control icons
 
 ## Next
 
-- [ ] Audit common terminal editing chords against native shells and TUIs
-- [ ] Add stronger terminal interaction coverage for printable typing, paste, and shortcuts
 - [ ] Replace rail width presets with direct drag/resizable rail behavior
 - [ ] Add first-class theme/font settings without adding persistent dashboard chrome
 - [ ] Add packaged installers and signed release artifacts

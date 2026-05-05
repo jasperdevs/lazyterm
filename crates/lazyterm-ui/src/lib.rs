@@ -10,10 +10,10 @@ use alacritty_terminal::{
 use gpui::{
     div, img, prelude::*, px, relative, rgb, App, Bounds, ClipboardItem, Context, CursorStyle, Div,
     Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
-    FontWeight, GlobalElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Style, Styled,
-    Subscription, UTF16Selection, Window, WindowControlArea,
+    FontWeight, GlobalElementId, InteractiveElement, IntoElement, KeyDownEvent, Keystroke,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, Render, ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement,
+    Style, Styled, Subscription, UTF16Selection, Window, WindowControlArea,
 };
 use lazyterm_agents::{detect_status, AgentPreset, AGENT_PRESETS};
 use lazyterm_api::{
@@ -46,7 +46,7 @@ const TEXT_MUTED: u32 = 0x858585;
 const TEXT_DIM: u32 = 0x5f5f5f;
 const TEXT_FAINT: u32 = 0x3f3f3f;
 
-const TITLEBAR_HEIGHT: f32 = 26.0;
+const TITLEBAR_HEIGHT: f32 = 0.0;
 const STATUSLINE_HEIGHT: f32 = 18.0;
 const COMPACT_SIDEBAR_WIDTH: f32 = 60.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 212.0;
@@ -366,6 +366,8 @@ enum IconKind {
     NewPane,
     SplitLayout,
     CommandPalette,
+    Minimize,
+    Maximize,
     Close,
 }
 
@@ -375,6 +377,8 @@ impl IconKind {
             Self::NewPane => "icons/plus.svg",
             Self::SplitLayout => "icons/split.svg",
             Self::CommandPalette => "icons/command.svg",
+            Self::Minimize => "icons/minus.svg",
+            Self::Maximize => "icons/maximize.svg",
             Self::Close => "icons/close.svg",
         }
     }
@@ -384,8 +388,39 @@ impl IconKind {
             Self::NewPane => "new pane",
             Self::SplitLayout => "toggle split layout",
             Self::CommandPalette => "command palette",
+            Self::Minimize => "minimize window",
+            Self::Maximize => "maximize window",
             Self::Close => "close window",
         }
+    }
+}
+
+fn window_control_area_for_icon(icon: IconKind) -> Option<WindowControlArea> {
+    match icon {
+        IconKind::Minimize => Some(WindowControlArea::Min),
+        IconKind::Maximize => Some(WindowControlArea::Max),
+        IconKind::Close => Some(WindowControlArea::Close),
+        _ => None,
+    }
+}
+
+struct TooltipView {
+    label: SharedString,
+}
+
+impl Render for TooltipView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(3.0))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE))
+            .font_family("JetBrains Mono")
+            .text_size(px(10.0))
+            .text_color(rgb(TEXT_SOFT))
+            .child(self.label.clone())
     }
 }
 
@@ -727,6 +762,11 @@ impl LazytermApp {
             return modifiers.control || modifiers.alt || modifiers.platform || modifiers.function;
         }
 
+        if is_clipboard_paste_shortcut(key, modifiers) {
+            self.paste_clipboard(cx);
+            return true;
+        }
+
         if modifiers.shift {
             match key {
                 "pageup" => {
@@ -806,11 +846,6 @@ impl LazytermApp {
                 self.activate_session(index);
                 return true;
             }
-        }
-
-        if modifiers.control && !modifiers.shift && !modifiers.alt && key == "v" {
-            self.paste_clipboard(cx);
-            return true;
         }
 
         if modifiers.control && key == "tab" {
@@ -1607,22 +1642,31 @@ impl LazytermApp {
         }
     }
 
-    fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_rail_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
+            .flex_col()
             .items_center()
-            .justify_between()
-            .h(px(TITLEBAR_HEIGHT))
-            .px_1()
-            .border_b_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(BG))
-            .window_control_area(WindowControlArea::Drag)
+            .gap_1()
+            .pb_1()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .font_family("JetBrains Mono")
+                    .justify_center()
+                    .w_full()
+                    .h(px(24.0))
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        window.start_window_move();
+                    })
+                    .id("rail-window-drag")
+                    .tooltip(|_, cx| {
+                        cx.new(|_| TooltipView {
+                            label: SharedString::from("drag window"),
+                        })
+                        .into()
+                    })
                     .child(
                         div()
                             .size(px(18.0))
@@ -1635,6 +1679,23 @@ impl LazytermApp {
                 div()
                     .flex()
                     .items_center()
+                    .gap(px(1.0))
+                    .child(self.render_titlebar_button(
+                        IconKind::Minimize,
+                        "window-minimize",
+                        cx,
+                        |_, window| {
+                            window.minimize_window();
+                        },
+                    ))
+                    .child(self.render_titlebar_button(
+                        IconKind::Maximize,
+                        "window-maximize",
+                        cx,
+                        |_, window| {
+                            window.zoom_window();
+                        },
+                    ))
                     .child(self.render_titlebar_button(
                         IconKind::Close,
                         "window-close",
@@ -1661,8 +1722,8 @@ impl LazytermApp {
             .h(px(22.0))
             .rounded(px(3.0))
             .bg(rgb(BG))
-            .when(icon == IconKind::Close, |this| {
-                this.window_control_area(WindowControlArea::Close)
+            .when_some(window_control_area_for_icon(icon), |this, area| {
+                this.window_control_area(area)
             })
             .hover(|this| this.bg(rgb(ROW_ACTIVE)))
             .child(
@@ -1672,6 +1733,12 @@ impl LazytermApp {
                     .id(format!("{}-icon", icon.label())),
             )
             .id(id)
+            .tooltip(move |_, cx| {
+                cx.new(move |_| TooltipView {
+                    label: SharedString::from(icon.label()),
+                })
+                .into()
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 action(this, window);
                 this.focus_terminal(window, cx);
@@ -1700,6 +1767,7 @@ impl LazytermApp {
                 4.0
             }))
             .py_1()
+            .child(self.render_rail_header(cx))
             .child(
                 div()
                     .flex()
@@ -2963,7 +3031,6 @@ impl Render for LazytermApp {
             .id("lazyterm-root")
             .on_click(cx.listener(|this, _, window, cx| this.focus_terminal(window, cx)))
             .child(TerminalInputElement { app: cx.entity() })
-            .child(self.render_titlebar(cx))
             .child(
                 div()
                     .flex()
@@ -3510,6 +3577,15 @@ fn control_byte_for_key(key: &str) -> Option<u8> {
 
 fn app_shortcut_modifiers(modifiers: gpui::Modifiers) -> bool {
     (modifiers.control && modifiers.shift) || (cfg!(target_os = "macos") && modifiers.platform)
+}
+
+fn is_clipboard_paste_shortcut(key: &str, modifiers: gpui::Modifiers) -> bool {
+    key == "insert"
+        && modifiers.shift
+        && !modifiers.control
+        && !modifiers.alt
+        && !modifiers.platform
+        || key == "v" && modifiers.control && !modifiers.alt && !modifiers.platform
 }
 
 fn tab_index_for_key(key: &str) -> Option<usize> {
@@ -4194,6 +4270,40 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_paste_shortcuts_match_terminal_defaults() {
+        assert!(is_clipboard_paste_shortcut(
+            "insert",
+            gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            }
+        ));
+        assert!(is_clipboard_paste_shortcut(
+            "v",
+            gpui::Modifiers {
+                control: true,
+                ..Default::default()
+            }
+        ));
+        assert!(is_clipboard_paste_shortcut(
+            "v",
+            gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..Default::default()
+            }
+        ));
+        assert!(!is_clipboard_paste_shortcut(
+            "insert",
+            gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..Default::default()
+            }
+        ));
+    }
+
+    #[test]
     fn agent_commands_map_to_cli_programs() {
         for preset in AGENT_PRESETS
             .iter()
@@ -4304,6 +4414,8 @@ mod tests {
         assert_eq!(IconKind::NewPane.asset_path(), "icons/plus.svg");
         assert_eq!(IconKind::SplitLayout.asset_path(), "icons/split.svg");
         assert_eq!(IconKind::CommandPalette.asset_path(), "icons/command.svg");
+        assert_eq!(IconKind::Minimize.asset_path(), "icons/minus.svg");
+        assert_eq!(IconKind::Maximize.asset_path(), "icons/maximize.svg");
         assert_eq!(IconKind::Close.asset_path(), "icons/close.svg");
     }
 
@@ -5041,7 +5153,7 @@ mod tests {
         );
 
         assert!(size.columns >= 20);
-        assert_eq!(size.rows, 9);
+        assert_eq!(size.rows, 10);
     }
 
     #[test]
