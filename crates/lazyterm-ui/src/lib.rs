@@ -49,7 +49,7 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const STATUSLINE_HEIGHT: f32 = 24.0;
-const COMPACT_SIDEBAR_WIDTH: f32 = 132.0;
+const COMPACT_SIDEBAR_WIDTH: f32 = 76.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 212.0;
 const WIDE_SIDEBAR_WIDTH: f32 = 268.0;
 const COMMAND_PALETTE_WIDTH: f32 = 420.0;
@@ -1760,6 +1760,58 @@ impl LazytermApp {
         let attention = session_needs_attention(session);
         let tab_background = if active { SURFACE_ACTIVE } else { SIDEBAR };
         let show_metadata = self.show_rail_metadata();
+        let compact = self.ui_settings.rail_width == RailWidth::Compact;
+
+        let mut tab_body = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .pl_3()
+            .pr_2()
+            .w_full()
+            .child(
+                div()
+                    .w(px(if compact { 32.0 } else { 28.0 }))
+                    .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::BOLD)
+                    .child(format!("{:02}", index + 1)),
+            );
+
+        if compact {
+            tab_body = tab_body.justify_center();
+        } else {
+            tab_body = tab_body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .text_color(rgb(if active { TEXT } else { TEXT_SOFT }))
+                            .text_size(px(13.0))
+                            .font_weight(if active {
+                                FontWeight::BOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .child(SharedString::from(session.summary.title.clone())),
+                    )
+                    .when(show_metadata, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_color(rgb(if active { TEXT_MUTED } else { TEXT_DIM }))
+                                .text_size(px(10.0))
+                                .child(SharedString::from(status_label(session.summary.status)))
+                                .child(SharedString::from(" / "))
+                                .child(SharedString::from(session.summary.agent.label())),
+                        )
+                    }),
+            );
+        }
 
         div()
             .flex()
@@ -1798,55 +1850,7 @@ impl LazytermApp {
                         .child("!"),
                 )
             })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl_3()
-                    .pr_2()
-                    .w_full()
-                    .child(
-                        div()
-                            .w(px(28.0))
-                            .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
-                            .text_size(px(16.0))
-                            .font_weight(FontWeight::BOLD)
-                            .child(format!("{:02}", index + 1)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .text_color(rgb(if active { TEXT } else { TEXT_SOFT }))
-                                    .text_size(px(13.0))
-                                    .font_weight(if active {
-                                        FontWeight::BOLD
-                                    } else {
-                                        FontWeight::NORMAL
-                                    })
-                                    .child(SharedString::from(session.summary.title.clone())),
-                            )
-                            .when(show_metadata, |this| {
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .text_color(rgb(if active { TEXT_MUTED } else { TEXT_DIM }))
-                                        .text_size(px(10.0))
-                                        .child(SharedString::from(status_label(
-                                            session.summary.status,
-                                        )))
-                                        .child(SharedString::from(" / "))
-                                        .child(SharedString::from(session.summary.agent.label())),
-                                )
-                            }),
-                    ),
-            )
+            .child(tab_body)
             .id(format!("session-tab-{index}"))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.active_session = index;

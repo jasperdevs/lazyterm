@@ -66,6 +66,7 @@
 - [x] CI dependency policy runs only where the cargo-deny action is supported
 - [x] Persisted vertical rail width presets through command palette and `lazytermctl rail`
 - [x] Make compact rail the default first-run experience so the terminal owns the window
+- [x] Compact rail renders as a narrow number rail instead of a squeezed sidebar
 - [x] Modified terminal key sequences for Ctrl/Alt/Shift navigation and word-editing chords
 - [x] Regression coverage for legacy settings defaulting to compact rail and modified terminal keys
 - [ ] Reduce command palette/action chrome to a serious terminal command surface
