@@ -17,6 +17,7 @@
 - [x] Move window controls out of the rail and add a larger drag gesture target
 - [x] Add true fullscreen window control
 - [x] Add release checksums and optional Windows signing
+- [x] Split persisted UI settings into a focused module
 
 ## Next
 

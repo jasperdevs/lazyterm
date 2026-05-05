@@ -18,13 +18,11 @@ use gpui::{
 use lazyterm_agents::{detect_status, AgentPreset, AGENT_PRESETS};
 use lazyterm_api::{
     AgentHealthSummary, ApiRequest, ApiResponse, TerminalDensity as ApiTerminalDensity,
-    TerminalRail as ApiTerminalRail, TileLayout as ApiTileLayout,
 };
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
 use lazyterm_sessions::SessionStore;
 use lazyterm_terminal::TerminalSize;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -35,8 +33,17 @@ use std::thread;
 use std::time::Duration;
 
 mod chrome;
+mod settings;
 
 use chrome::{IconKind, TooltipView};
+use settings::{
+    load_ui_settings, normalize_font_family, save_ui_settings, sidebar_width_for_rail, RailWidth,
+    TileLayout, UiSettings, DEFAULT_SIDEBAR_WIDTH, DEFAULT_TERMINAL_PADDING,
+    MAX_CUSTOM_SIDEBAR_WIDTH, MAX_SPLIT_RATIO, MAX_TERMINAL_FONT_SIZE, MIN_CUSTOM_SIDEBAR_WIDTH,
+    MIN_SPLIT_RATIO, MIN_TERMINAL_FONT_SIZE,
+};
+#[cfg(test)]
+use settings::{PersistedUiSettings, DEFAULT_SPLIT_RATIO, DEFAULT_TERMINAL_FONT_FAMILY};
 
 const BG: u32 = 0x050505;
 const SURFACE: u32 = 0x101010;
@@ -52,26 +59,14 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 0.0;
 const STATUSLINE_HEIGHT: f32 = 18.0;
-const COMPACT_SIDEBAR_WIDTH: f32 = 60.0;
-const DEFAULT_SIDEBAR_WIDTH: f32 = 212.0;
-const WIDE_SIDEBAR_WIDTH: f32 = 268.0;
-const MIN_CUSTOM_SIDEBAR_WIDTH: f32 = 52.0;
-const MAX_CUSTOM_SIDEBAR_WIDTH: f32 = 288.0;
 const COMMAND_PALETTE_WIDTH: f32 = 480.0;
 const COMMAND_PALETTE_MAX_HEIGHT: f32 = 560.0;
 const COMMAND_PALETTE_TOP: f32 = 10.0;
-const DEFAULT_TERMINAL_PADDING: f32 = 16.0;
-const DEFAULT_SPLIT_RATIO: f32 = 0.5;
-const MIN_SPLIT_RATIO: f32 = 0.2;
-const MAX_SPLIT_RATIO: f32 = 0.8;
 const MIN_PANE_RATIO: f32 = 0.08;
 const RESIZE_HANDLE_SIZE: f32 = 4.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
 const TAB_HEIGHT: f32 = 42.0;
-const MIN_TERMINAL_FONT_SIZE: f32 = 8.0;
-const MAX_TERMINAL_FONT_SIZE: f32 = 24.0;
-const DEFAULT_TERMINAL_FONT_FAMILY: &str = "JetBrains Mono";
 const API_BIND_ADDR: &str = "127.0.0.1:47431";
 const API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -92,19 +87,6 @@ pub struct LazytermApp {
     ui_settings: UiSettings,
     resize_drag: Option<ResizeDrag>,
     rail_resize_drag: Option<RailResizeDrag>,
-}
-
-#[derive(Clone, Debug)]
-struct UiSettings {
-    tile_sessions: bool,
-    tile_layout: TileLayout,
-    rail_width: RailWidth,
-    custom_rail_width: Option<f32>,
-    terminal_font_family: String,
-    terminal_font_size: f32,
-    terminal_padding: f32,
-    split_ratio: f32,
-    pane_ratios: Vec<f32>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,96 +143,6 @@ struct AgentLaunchQuery {
 enum SplitOrientation {
     Columns,
     Rows,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
-enum TileLayout {
-    Grid,
-    Columns,
-    Rows,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
-enum RailWidth {
-    Compact,
-    Default,
-    Wide,
-}
-
-impl From<ApiTerminalRail> for RailWidth {
-    fn from(value: ApiTerminalRail) -> Self {
-        match value {
-            ApiTerminalRail::Compact => Self::Compact,
-            ApiTerminalRail::Default => Self::Default,
-            ApiTerminalRail::Wide => Self::Wide,
-        }
-    }
-}
-
-impl From<ApiTileLayout> for TileLayout {
-    fn from(value: ApiTileLayout) -> Self {
-        match value {
-            ApiTileLayout::Grid => Self::Grid,
-            ApiTileLayout::Columns => Self::Columns,
-            ApiTileLayout::Rows => Self::Rows,
-        }
-    }
-}
-
-impl From<PersistedUiSettings> for UiSettings {
-    fn from(value: PersistedUiSettings) -> Self {
-        Self {
-            tile_sessions: value.tile_sessions,
-            tile_layout: value.tile_layout,
-            rail_width: value.rail_width,
-            custom_rail_width: value
-                .custom_rail_width
-                .map(|width| width.clamp(MIN_CUSTOM_SIDEBAR_WIDTH, MAX_CUSTOM_SIDEBAR_WIDTH)),
-            terminal_font_family: normalize_font_family(value.terminal_font_family),
-            terminal_font_size: value
-                .terminal_font_size
-                .clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE),
-            terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
-            split_ratio: value.split_ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO),
-            pane_ratios: value.pane_ratios,
-        }
-    }
-}
-
-impl From<UiSettings> for PersistedUiSettings {
-    fn from(value: UiSettings) -> Self {
-        Self {
-            tile_sessions: value.tile_sessions,
-            tile_layout: value.tile_layout,
-            rail_width: value.rail_width,
-            custom_rail_width: value.custom_rail_width,
-            terminal_font_family: value.terminal_font_family,
-            terminal_font_size: value.terminal_font_size,
-            terminal_padding: value.terminal_padding,
-            split_ratio: value.split_ratio,
-            pane_ratios: value.pane_ratios,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct PersistedUiSettings {
-    tile_sessions: bool,
-    #[serde(default = "default_tile_layout")]
-    tile_layout: TileLayout,
-    #[serde(default = "default_rail_width")]
-    rail_width: RailWidth,
-    #[serde(default)]
-    custom_rail_width: Option<f32>,
-    #[serde(default = "default_terminal_font_family")]
-    terminal_font_family: String,
-    terminal_font_size: f32,
-    #[serde(default = "default_terminal_padding")]
-    terminal_padding: f32,
-    #[serde(default = "default_split_ratio")]
-    split_ratio: f32,
-    #[serde(default)]
-    pane_ratios: Vec<f32>,
 }
 
 struct TerminalSession {
@@ -422,17 +314,7 @@ impl LazytermApp {
         let state_dir = app_state_dir();
         let (api_sender, api_events) = mpsc::channel();
         start_api_listener(api_sender);
-        let ui_settings = load_ui_settings(&state_dir).unwrap_or(UiSettings {
-            tile_sessions: false,
-            tile_layout: TileLayout::Grid,
-            rail_width: RailWidth::Compact,
-            custom_rail_width: None,
-            terminal_font_family: DEFAULT_TERMINAL_FONT_FAMILY.to_string(),
-            terminal_font_size: 12.0,
-            terminal_padding: DEFAULT_TERMINAL_PADDING,
-            split_ratio: DEFAULT_SPLIT_RATIO,
-            pane_ratios: Vec::new(),
-        });
+        let ui_settings = load_ui_settings(&state_dir).unwrap_or_default();
         let sessions = load_session_summaries(&state_dir)
             .map(|summaries| spawn_persisted_sessions(summaries, branch.clone()))
             .filter(|sessions| !sessions.is_empty())
@@ -3206,68 +3088,6 @@ fn app_state_dir() -> PathBuf {
     }
 
     PathBuf::from(".lazyterm")
-}
-
-fn default_terminal_padding() -> f32 {
-    DEFAULT_TERMINAL_PADDING
-}
-
-fn default_tile_layout() -> TileLayout {
-    TileLayout::Grid
-}
-
-fn default_rail_width() -> RailWidth {
-    RailWidth::Compact
-}
-
-fn sidebar_width_for_rail(width: RailWidth) -> f32 {
-    match width {
-        RailWidth::Compact => COMPACT_SIDEBAR_WIDTH,
-        RailWidth::Default => DEFAULT_SIDEBAR_WIDTH,
-        RailWidth::Wide => WIDE_SIDEBAR_WIDTH,
-    }
-}
-
-fn default_split_ratio() -> f32 {
-    DEFAULT_SPLIT_RATIO
-}
-
-fn default_terminal_font_family() -> String {
-    DEFAULT_TERMINAL_FONT_FAMILY.to_string()
-}
-
-fn normalize_font_family(family: String) -> String {
-    let mut family = family
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect::<String>()
-        .trim()
-        .to_string();
-    family.truncate(80);
-
-    if family.is_empty() {
-        default_terminal_font_family()
-    } else {
-        family
-    }
-}
-
-fn load_ui_settings(state_dir: &Path) -> Option<UiSettings> {
-    let path = state_dir.join("ui-settings.json");
-    let payload = fs::read_to_string(path).ok()?;
-    serde_json::from_str::<PersistedUiSettings>(&payload)
-        .ok()
-        .map(Into::into)
-}
-
-fn save_ui_settings(
-    state_dir: &Path,
-    settings: UiSettings,
-) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(state_dir)?;
-    let payload = serde_json::to_string_pretty(&PersistedUiSettings::from(settings))?;
-    fs::write(state_dir.join("ui-settings.json"), payload)?;
-    Ok(())
 }
 
 fn load_session_summaries(state_dir: &Path) -> Option<Vec<SessionSummary>> {
