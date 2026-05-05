@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 alacritty_terminal.workspace = true
 gpui.workspace = true
+lazyterm-api = { path = "../lazyterm-api" }
 lazyterm-core = { path = "../lazyterm-core" }
 lazyterm-pty = { path = "../lazyterm-pty" }
 lazyterm-sessions = { path = "../lazyterm-sessions" }

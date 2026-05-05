@@ -38,10 +38,12 @@
 - [x] Agent pane commands for Codex, Claude, and OpenCode
 - [x] Persistent UI settings in `%LOCALAPPDATA%/lazyterm/ui-settings.json`
 - [x] Persistent pane manifest in `%LOCALAPPDATA%/lazyterm/sessions.sqlite`
+- [x] App socket transport for the CLI/API
+- [x] Slop UI cleanup pass: slimmer vertical tabs, SVG logo, selected command row, fewer placeholders
 
 ## Next
 
-- [ ] Add app socket transport for the CLI/API
+- [ ] Deeper terminal-first chrome pass with screenshots against a visual reference
 - [ ] Add agent pane presets with arguments, working-directory prompts, and health checks
 - [ ] Add real split-pane resize handles
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols

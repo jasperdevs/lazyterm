@@ -1,9 +1,13 @@
 use std::fmt;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use lazyterm_api::ApiRequest;
+use lazyterm_api::{ApiRequest, ApiResponse};
 use lazyterm_core::AgentKind;
+
+const API_ADDR: &str = "127.0.0.1:47431";
 
 fn main() -> ExitCode {
     match parse_cli(std::env::args().skip(1)) {
@@ -11,10 +15,20 @@ fn main() -> ExitCode {
             println!("{}", help_text(topic));
             ExitCode::SUCCESS
         }
-        Ok(ParsedCli::Request(request)) => {
-            print_request(&request);
-            ExitCode::SUCCESS
-        }
+        Ok(ParsedCli::Request(request)) => match send_request(&request) {
+            Ok(response) => {
+                print_response(&response);
+                match response {
+                    ApiResponse::Error { .. } => ExitCode::from(1),
+                    _ => ExitCode::SUCCESS,
+                }
+            }
+            Err(error) => {
+                eprintln!("error: failed to reach lazyterm app on {API_ADDR}: {error}");
+                eprintln!("start lazyterm-app, then retry the command");
+                ExitCode::from(1)
+            }
+        },
         Err(err) => {
             eprintln!("error: {}", err.message);
             eprintln!();
@@ -206,10 +220,21 @@ fn parse_focus_command(args: impl Iterator<Item = String>) -> Result<ParsedCli, 
     Ok(ParsedCli::Request(ApiRequest::FocusSession { id }))
 }
 
-fn print_request(request: &ApiRequest) {
+fn send_request(request: &ApiRequest) -> std::io::Result<ApiResponse> {
+    let mut stream = TcpStream::connect(API_ADDR)?;
+    serde_json::to_writer(&mut stream, request).map_err(std::io::Error::other)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+
+    let mut response = String::new();
+    BufReader::new(stream).read_line(&mut response)?;
+    serde_json::from_str(response.trim_end()).map_err(std::io::Error::other)
+}
+
+fn print_response(response: &ApiResponse) {
     println!(
         "{}",
-        serde_json::to_string_pretty(request).expect("request serializes")
+        serde_json::to_string_pretty(response).expect("response serializes")
     );
 }
 
@@ -219,17 +244,17 @@ fn help_text(topic: HelpTopic) -> String {
     match topic {
         HelpTopic::General => format!(
             "\
-lazyterm - preview the API request that would be sent
+lazyterm - control the running Lazyterm app
 
 USAGE:
     lazyterm <command> [options]
 
 COMMANDS:
-    list               preview a ListSessions request
-    status             preview a Status request
-    new                preview a NewSession request for the shell agent
-    run                preview a NewSession request for the codex agent
-    focus <id>         preview a FocusSession request
+    list               list sessions in the running app
+    status             show current app session status
+    new                create a shell session
+    run                create a codex session
+    focus <id>         focus a session
     help [command]     show help for a command
 
 OPTIONS:
@@ -248,20 +273,20 @@ EXAMPLES:
         HelpTopic::List => "\
 lazyterm list
 
-Preview a ListSessions request.
+List sessions in the running app.
 "
         .to_string(),
         HelpTopic::Status => "\
 lazyterm status
 
-Preview a Status request.
+Show session status from the running app.
 "
         .to_string(),
         HelpTopic::New => format!(
             "\
 lazyterm new [options]
 
-Preview a NewSession request with the shell agent by default.
+Create a new session with the shell agent by default.
 
 OPTIONS:
     -h, --help         show help for this command
@@ -274,7 +299,7 @@ OPTIONS:
             "\
 lazyterm run [options]
 
-Preview a NewSession request with the codex agent by default.
+Create a new session with the codex agent by default.
 
 OPTIONS:
     -h, --help         show help for this command
@@ -286,7 +311,7 @@ OPTIONS:
         HelpTopic::Focus => "\
 lazyterm focus <id>
 
-Preview a FocusSession request.
+Focus a session in the running app.
 "
         .to_string(),
     }

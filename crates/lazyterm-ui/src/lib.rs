@@ -14,13 +14,15 @@ use gpui::{
     Render, SharedString, Size, StatefulInteractiveElement, Style, Styled, Subscription,
     UTF16Selection, Window,
 };
+use lazyterm_api::{ApiRequest, ApiResponse};
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
 use lazyterm_sessions::SessionStore;
 use lazyterm_terminal::TerminalSize;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -41,12 +43,16 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const WORKSPACE_BAR_HEIGHT: f32 = 38.0;
-const SIDEBAR_WIDTH: f32 = 76.0;
-const COMMAND_PALETTE_WIDTH: f32 = 320.0;
+const STATUSLINE_HEIGHT: f32 = 24.0;
+const SIDEBAR_WIDTH: f32 = 58.0;
+const COMMAND_PALETTE_WIDTH: f32 = 360.0;
+const COMMAND_PALETTE_TOP: f32 = TITLEBAR_HEIGHT + 10.0;
 const TERMINAL_X_PADDING: f32 = 20.0;
 const TERMINAL_Y_PADDING: f32 = 16.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
 const TERMINAL_LINE_HEIGHT: f32 = 18.0;
+const TAB_HEIGHT: f32 = 42.0;
+const API_BIND_ADDR: &str = "127.0.0.1:47431";
 
 pub struct LazytermApp {
     focus_handle: FocusHandle,
@@ -60,6 +66,7 @@ pub struct LazytermApp {
     keystroke_observer: Option<Subscription>,
     command_palette_open: bool,
     command_palette_query: String,
+    api_events: Receiver<ApiEvent>,
     ui_settings: UiSettings,
 }
 
@@ -100,6 +107,7 @@ struct TerminalSession {
     terminal: TerminalGrid,
     lines: Vec<TerminalLine>,
     pending_line: String,
+    pending_startup_input: Option<Vec<u8>>,
     terminal_size: TerminalSize,
 }
 
@@ -119,6 +127,11 @@ enum PtyEvent {
     Output(Vec<u8>),
     Error(String),
     Exited,
+}
+
+struct ApiEvent {
+    request: ApiRequest,
+    response: Sender<ApiResponse>,
 }
 
 struct TerminalGrid {
@@ -174,12 +187,16 @@ enum CommandKind {
     NewCodex,
     NewClaude,
     NewOpenCode,
+    NewGemini,
+    NewAider,
     SplitPane,
     ToggleLayout,
     RestartPane,
     ClosePane,
     CopyTranscript,
     Paste,
+    CompactFont,
+    DefaultFont,
     FontDown,
     FontUp,
 }
@@ -196,6 +213,8 @@ impl LazytermApp {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let branch = current_branch();
         let state_dir = app_state_dir();
+        let (api_sender, api_events) = mpsc::channel();
+        start_api_listener(api_sender);
         let ui_settings = load_ui_settings(&state_dir).unwrap_or(UiSettings {
             tile_sessions: false,
             terminal_font_size: 12.0,
@@ -210,6 +229,7 @@ impl LazytermApp {
                     branch.clone(),
                     "shell 1",
                     AgentKind::Shell,
+                    None,
                 )]
             });
 
@@ -225,6 +245,7 @@ impl LazytermApp {
             keystroke_observer: None,
             command_palette_open: false,
             command_palette_query: String::new(),
+            api_events,
             ui_settings,
         };
 
@@ -264,7 +285,7 @@ impl LazytermApp {
 
                 if app
                     .update_in(cx, |app, _window, cx| {
-                        if app.poll_pty_events() {
+                        if app.poll_pty_events() || app.poll_api_events() {
                             cx.notify();
                         }
                     })
@@ -295,6 +316,45 @@ impl LazytermApp {
             }
         }
         changed
+    }
+
+    fn poll_api_events(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(event) = self.api_events.try_recv() {
+            let response = self.handle_api_request(event.request);
+            changed |= !matches!(response, ApiResponse::Sessions(_));
+            let _ = event.response.send(response);
+        }
+        changed
+    }
+
+    fn handle_api_request(&mut self, request: ApiRequest) -> ApiResponse {
+        match request {
+            ApiRequest::NewSession { cwd, agent, task } => {
+                self.create_terminal_for(agent, cwd, task);
+                ApiResponse::Ack
+            }
+            ApiRequest::ListSessions | ApiRequest::Status => ApiResponse::Sessions(
+                self.sessions
+                    .iter()
+                    .map(|session| session.summary.clone())
+                    .collect(),
+            ),
+            ApiRequest::FocusSession { id } => {
+                let Some(index) = self
+                    .sessions
+                    .iter()
+                    .position(|session| session.summary.id.as_str() == id)
+                else {
+                    return ApiResponse::Error {
+                        message: format!("session '{id}' was not found"),
+                    };
+                };
+
+                self.active_session = index;
+                ApiResponse::Ack
+            }
+        }
     }
 
     fn resize_sessions(&mut self, viewport: Size<Pixels>) {
@@ -497,6 +557,7 @@ impl LazytermApp {
             self.branch.clone(),
             format!("shell {index}"),
             AgentKind::Shell,
+            None,
         ));
         self.active_session = self.sessions.len() - 1;
         self.persist_state();
@@ -511,8 +572,28 @@ impl LazytermApp {
             self.branch.clone(),
             title,
             agent,
+            None,
         ));
         self.active_session = self.sessions.len() - 1;
+        self.persist_state();
+    }
+
+    fn create_terminal_for(&mut self, agent: AgentKind, cwd: PathBuf, task: Option<String>) {
+        let index = self.sessions.len() + 1;
+        let title = match agent {
+            AgentKind::Shell => format!("shell {index}"),
+            _ => format!("{} {index}", agent.label().to_ascii_lowercase()),
+        };
+        self.sessions.push(TerminalSession::spawn(
+            index,
+            cwd,
+            current_branch(),
+            title,
+            agent,
+            task.map(startup_input_bytes),
+        ));
+        self.active_session = self.sessions.len() - 1;
+
         self.persist_state();
     }
 
@@ -532,8 +613,14 @@ impl LazytermApp {
         let index = self.active_session + 1;
         let title = self.sessions[self.active_session].summary.title.clone();
         let agent = self.sessions[self.active_session].summary.agent;
-        self.sessions[self.active_session] =
-            TerminalSession::spawn(index, self.cwd.clone(), self.branch.clone(), title, agent);
+        self.sessions[self.active_session] = TerminalSession::spawn(
+            index,
+            self.cwd.clone(),
+            self.branch.clone(),
+            title,
+            agent,
+            None,
+        );
         self.persist_state();
     }
 
@@ -591,6 +678,11 @@ impl LazytermApp {
         self.persist_ui_settings();
     }
 
+    fn set_font_size(&mut self, size: f32) {
+        self.ui_settings.terminal_font_size = size.clamp(10.0, 16.0);
+        self.persist_ui_settings();
+    }
+
     fn toggle_tile_sessions(&mut self) {
         self.ui_settings.tile_sessions = !self.ui_settings.tile_sessions;
         self.persist_ui_settings();
@@ -610,12 +702,16 @@ impl LazytermApp {
             CommandKind::NewCodex => self.create_agent_terminal(AgentKind::Codex),
             CommandKind::NewClaude => self.create_agent_terminal(AgentKind::Claude),
             CommandKind::NewOpenCode => self.create_agent_terminal(AgentKind::OpenCode),
+            CommandKind::NewGemini => self.create_agent_terminal(AgentKind::Gemini),
+            CommandKind::NewAider => self.create_agent_terminal(AgentKind::Aider),
             CommandKind::SplitPane => self.split_workspace(),
             CommandKind::ToggleLayout => self.toggle_tile_sessions(),
             CommandKind::RestartPane => self.restart_active_terminal(),
             CommandKind::ClosePane => self.close_active_terminal(),
             CommandKind::CopyTranscript => self.copy_active_transcript(cx),
             CommandKind::Paste => self.paste_clipboard(cx),
+            CommandKind::CompactFont => self.set_font_size(11.0),
+            CommandKind::DefaultFont => self.set_font_size(12.0),
             CommandKind::FontDown => self.adjust_font_size(-1.0),
             CommandKind::FontUp => self.adjust_font_size(1.0),
         }
@@ -650,6 +746,16 @@ impl LazytermApp {
                 shortcut: "agent",
             },
             CommandItem {
+                kind: CommandKind::NewGemini,
+                label: "new gemini",
+                shortcut: "agent",
+            },
+            CommandItem {
+                kind: CommandKind::NewAider,
+                label: "new aider",
+                shortcut: "agent",
+            },
+            CommandItem {
                 kind: CommandKind::SplitPane,
                 label: "split pane",
                 shortcut: "ctrl+shift+b",
@@ -678,6 +784,16 @@ impl LazytermApp {
                 kind: CommandKind::Paste,
                 label: "paste",
                 shortcut: "ctrl+shift+v",
+            },
+            CommandItem {
+                kind: CommandKind::CompactFont,
+                label: "font compact",
+                shortcut: "11px",
+            },
+            CommandItem {
+                kind: CommandKind::DefaultFont,
+                label: "font default",
+                shortcut: "12px",
             },
             CommandItem {
                 kind: CommandKind::FontDown,
@@ -780,19 +896,19 @@ impl LazytermApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .font_family("JetBrains Mono")
                     .child(
                         div()
-                            .size(px(20.0))
-                            .rounded_lg()
+                            .size(px(22.0))
+                            .rounded(px(6.0))
                             .overflow_hidden()
-                            .child(img("logoblackbackground.png").size_full()),
+                            .child(img("logoblackbackground.svg").size_full()),
                     )
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(TEXT_SOFT))
+                            .text_size(px(11.0))
+                            .text_color(rgb(TEXT_MUTED))
                             .child(SharedString::from(self.workspace_label())),
                     ),
             )
@@ -851,8 +967,8 @@ impl LazytermApp {
             .rounded(px(6.0))
             .border_1()
             .border_color(rgb(BORDER))
-            .bg(rgb(BG))
-            .text_color(rgb(TEXT_MUTED))
+            .bg(rgb(SURFACE))
+            .text_color(rgb(TEXT_SOFT))
             .font_family("JetBrains Mono")
             .text_size(px(12.0))
             .child(label)
@@ -873,41 +989,20 @@ impl LazytermApp {
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_1()
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .border_r_1()
             .border_color(rgb(BORDER))
             .bg(rgb(SIDEBAR))
             .items_center()
-            .px_2()
-            .py_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(42.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(BG))
-                    .text_color(rgb(TEXT_SOFT))
-                    .font_family("JetBrains Mono")
-                    .text_size(px(15.0))
-                    .child("+")
-                    .id("new-terminal")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.create_terminal();
-                        this.focus_terminal(window, cx);
-                        cx.notify();
-                    })),
-            )
+            .px_1()
+            .py_1()
             .child(
                 div()
                     .w_full()
                     .flex_1()
-                    .pb_2()
+                    .py_1()
                     .id("session-rail")
                     .overflow_y_scroll()
                     .child(tabs.w_full()),
@@ -933,20 +1028,21 @@ impl LazytermApp {
             .justify_center()
             .relative()
             .w_full()
-            .h(px(50.0))
-            .rounded(px(8.0))
+            .h(px(TAB_HEIGHT))
+            .rounded(px(6.0))
             .border_1()
             .border_color(rgb(if active { TEXT_SOFT } else { BORDER }))
-            .bg(rgb(if active { ROW_ACTIVE } else { SIDEBAR }))
+            .bg(rgb(if active { ROW_ACTIVE } else { BG }))
             .font_family("JetBrains Mono")
             .child(
                 div()
                     .absolute()
-                    .left(px(6.0))
-                    .top(px(6.0))
-                    .size(px(5.0))
+                    .left(px(0.0))
+                    .top(px(7.0))
+                    .bottom(px(7.0))
+                    .w(px(2.0))
                     .rounded_full()
-                    .bg(rgb(status_color)),
+                    .bg(rgb(if active { TEXT } else { status_color })),
             )
             .child(
                 div()
@@ -1078,6 +1174,19 @@ impl LazytermApp {
                             .child(SharedString::from(session_context_label(session))),
                     ),
             )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(11.0))
+                    .text_color(rgb(TEXT_DIM))
+                    .child(SharedString::from(format!("{} panes", self.sessions.len())))
+                    .child(SharedString::from(format!(
+                        "{:.0}px",
+                        self.ui_settings.terminal_font_size
+                    ))),
+            )
     }
 
     fn render_grid_row(&self, row: TerminalGridRow) -> impl IntoElement {
@@ -1131,10 +1240,10 @@ impl LazytermApp {
             .flex()
             .items_center()
             .justify_between()
-            .h(px(24.0))
+            .h(px(STATUSLINE_HEIGHT))
             .border_t_1()
             .border_color(rgb(if focused { BORDER_ACTIVE } else { BORDER }))
-            .bg(rgb(SURFACE))
+            .bg(rgb(BG))
             .px_3()
             .font_family("JetBrains Mono")
             .text_size(px(11.0))
@@ -1153,34 +1262,18 @@ impl LazytermApp {
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut commands = div().flex().flex_col().gap_2();
-        for command in self.filtered_commands() {
-            commands = commands.child(self.render_command_action(command, cx));
-        }
-        if self.filtered_commands().is_empty() {
-            commands = commands.child(
-                div()
-                    .min_h(px(36.0))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .rounded(px(7.0))
-                    .bg(rgb(BG))
-                    .border_1()
-                    .border_color(rgb(BORDER))
-                    .text_color(rgb(TEXT_DIM))
-                    .text_size(px(12.0))
-                    .child("no command"),
-            );
+        for (index, command) in self.filtered_commands().into_iter().enumerate() {
+            commands = commands.child(self.render_command_action(command, index == 0, cx));
         }
 
         div()
             .flex()
             .flex_col()
             .w(px(COMMAND_PALETTE_WIDTH))
-            .rounded(px(10.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(SURFACE))
+            .border_color(rgb(BORDER_ACTIVE))
+            .bg(rgb(BG))
             .font_family("JetBrains Mono")
             .overflow_hidden()
             .child(
@@ -1196,7 +1289,7 @@ impl LazytermApp {
                         div()
                             .text_color(rgb(TEXT))
                             .text_size(px(12.0))
-                            .child("commands"),
+                            .child("command"),
                     )
                     .child(
                         div()
@@ -1207,8 +1300,8 @@ impl LazytermApp {
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(rgb(BORDER))
-                            .bg(rgb(BG))
-                            .text_color(rgb(TEXT_MUTED))
+                            .bg(rgb(SURFACE))
+                            .text_color(rgb(TEXT_SOFT))
                             .text_size(px(12.0))
                             .child("x")
                             .id("command-palette-close")
@@ -1223,8 +1316,8 @@ impl LazytermApp {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .p_3()
+                    .gap_1()
+                    .p_2()
                     .child(self.render_command_query())
                     .child(commands),
             )
@@ -1233,6 +1326,7 @@ impl LazytermApp {
     fn render_command_action(
         &self,
         command: CommandItem,
+        selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -1241,13 +1335,13 @@ impl LazytermApp {
             .justify_between()
             .min_h(px(36.0))
             .px_3()
-            .rounded(px(7.0))
-            .bg(rgb(BG))
+            .rounded(px(6.0))
+            .bg(rgb(if selected { ROW_ACTIVE } else { SURFACE }))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(if selected { TEXT_SOFT } else { BORDER }))
             .child(
                 div()
-                    .text_color(rgb(TEXT_SOFT))
+                    .text_color(rgb(if selected { TEXT } else { TEXT_SOFT }))
                     .text_size(px(12.0))
                     .child(command.label),
             )
@@ -1272,9 +1366,9 @@ impl LazytermApp {
 
     fn render_command_query(&self) -> impl IntoElement {
         let text = if self.command_palette_query.is_empty() {
-            "type command".into()
+            ">".into()
         } else {
-            self.command_palette_query.clone()
+            format!("> {}", self.command_palette_query)
         };
 
         div()
@@ -1283,8 +1377,8 @@ impl LazytermApp {
             .justify_between()
             .min_h(px(36.0))
             .px_3()
-            .rounded(px(7.0))
-            .bg(rgb(BG))
+            .rounded(px(6.0))
+            .bg(rgb(SURFACE))
             .border_1()
             .border_color(rgb(BORDER_ACTIVE))
             .child(
@@ -1301,7 +1395,7 @@ impl LazytermApp {
                 div()
                     .text_color(rgb(TEXT_DIM))
                     .text_size(px(11.0))
-                    .child("enter"),
+                    .child("return"),
             )
     }
 }
@@ -1313,6 +1407,7 @@ impl TerminalSession {
         branch: Option<String>,
         title: impl Into<String>,
         agent: AgentKind,
+        pending_startup_input: Option<Vec<u8>>,
     ) -> Self {
         let title = title.into();
         let (sender, events) = mpsc::channel();
@@ -1375,6 +1470,7 @@ impl TerminalSession {
             terminal: TerminalGrid::new(TerminalSize::DEFAULT),
             lines,
             pending_line: String::new(),
+            pending_startup_input,
             terminal_size: TerminalSize::DEFAULT,
         }
     }
@@ -1382,6 +1478,7 @@ impl TerminalSession {
     fn push_output(&mut self, output: &[u8]) {
         self.terminal.feed(output);
         self.flush_terminal_replies();
+        self.flush_startup_input();
         let output = normalize_pty_output(&String::from_utf8_lossy(output));
         for segment in output.split_inclusive('\n') {
             if segment.ends_with('\n') {
@@ -1392,6 +1489,22 @@ impl TerminalSession {
             }
         }
         self.summary.status = SessionStatus::Running;
+    }
+
+    fn flush_startup_input(&mut self) {
+        let Some(input) = self.pending_startup_input.take() else {
+            return;
+        };
+        let Some(pty) = &mut self.pty else {
+            return;
+        };
+
+        if let Err(error) = pty.write_all(&input) {
+            self.lines.push(TerminalLine::error(format!(
+                "startup input failed: {error}"
+            )));
+            self.summary.status = SessionStatus::Failed;
+        }
     }
 
     fn flush_terminal_replies(&mut self) {
@@ -1795,7 +1908,7 @@ impl Render for LazytermApp {
                         this.child(
                             div()
                                 .absolute()
-                                .top(px(44.0))
+                                .top(px(COMMAND_PALETTE_TOP))
                                 .right(px(12.0))
                                 .child(self.render_command_palette(cx)),
                         )
@@ -1822,7 +1935,7 @@ fn terminal_size_for_viewport(
         ((width - SIDEBAR_WIDTH) / tile_columns - (TERMINAL_X_PADDING * 2.0)).max(160.0);
     let terminal_height = ((height - TITLEBAR_HEIGHT) / tile_rows
         - WORKSPACE_BAR_HEIGHT
-        - 24.0
+        - STATUSLINE_HEIGHT
         - (TERMINAL_Y_PADDING * 2.0))
         .max(96.0);
     let columns = (terminal_width / terminal_char_width(terminal_font_size))
@@ -1907,9 +2020,91 @@ fn spawn_persisted_sessions(
                     .or_else(|| fallback_branch.clone()),
                 summary.title,
                 summary.agent,
+                None,
             )
         })
         .collect::<Vec<_>>()
+}
+
+fn start_api_listener(sender: Sender<ApiEvent>) {
+    thread::Builder::new()
+        .name("lazyterm-api-listener".into())
+        .spawn(move || {
+            let listener = match TcpListener::bind(API_BIND_ADDR) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    eprintln!("lazyterm: failed to bind api listener on {API_BIND_ADDR}: {error}");
+                    return;
+                }
+            };
+
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => handle_api_stream(stream, &sender),
+                    Err(error) => eprintln!("lazyterm: api connection failed: {error}"),
+                }
+            }
+        })
+        .expect("spawn api listener thread");
+}
+
+fn handle_api_stream(mut stream: TcpStream, sender: &Sender<ApiEvent>) {
+    let request = match read_api_request(&stream) {
+        Ok(request) => request,
+        Err(error) => {
+            let _ = write_api_response(
+                &mut stream,
+                &ApiResponse::Error {
+                    message: error.to_string(),
+                },
+            );
+            return;
+        }
+    };
+
+    let (response_sender, response_receiver) = mpsc::channel();
+    if sender
+        .send(ApiEvent {
+            request,
+            response: response_sender,
+        })
+        .is_err()
+    {
+        let _ = write_api_response(
+            &mut stream,
+            &ApiResponse::Error {
+                message: "app event loop is closed".into(),
+            },
+        );
+        return;
+    }
+
+    match response_receiver.recv_timeout(Duration::from_secs(5)) {
+        Ok(response) => {
+            let _ = write_api_response(&mut stream, &response);
+        }
+        Err(error) => {
+            let _ = write_api_response(
+                &mut stream,
+                &ApiResponse::Error {
+                    message: format!("timed out waiting for app response: {error}"),
+                },
+            );
+        }
+    }
+}
+
+fn read_api_request(stream: &TcpStream) -> io::Result<ApiRequest> {
+    let mut line = String::new();
+    let mut reader = BufReader::new(stream.try_clone()?);
+    reader.read_line(&mut line)?;
+    serde_json::from_str(line.trim_end()).map_err(io::Error::other)
+}
+
+fn write_api_response(stream: &mut TcpStream, response: &ApiResponse) -> io::Result<()> {
+    serde_json::to_writer(&mut *stream, response).map_err(io::Error::other)?;
+    stream.write_all(b"\n")?;
+    stream.flush()
 }
 
 fn tile_columns(session_count: usize) -> usize {
@@ -2000,6 +2195,12 @@ fn command_label(command: &ShellCommand) -> String {
     }
 
     format!("{} {}", command.program, command.args.join(" "))
+}
+
+fn startup_input_bytes(task: String) -> Vec<u8> {
+    let mut input = task.into_bytes();
+    input.push(b'\r');
+    input
 }
 
 fn terminal_cell_style(cell: &Cell, cursor: CursorRender) -> TerminalCellStyle {
@@ -2227,6 +2428,43 @@ mod tests {
         };
 
         assert_eq!(command_label(&command), "pwsh.exe -NoLogo -NoProfile");
+    }
+
+    #[test]
+    fn api_response_serializes_as_json_line() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener binds");
+        let address = listener.local_addr().expect("listener has address");
+        let client = TcpStream::connect(address).expect("client connects");
+        let (mut server, _) = listener.accept().expect("server accepts");
+
+        write_api_response(&mut server, &ApiResponse::Ack).expect("response writes");
+
+        let mut line = String::new();
+        BufReader::new(client)
+            .read_line(&mut line)
+            .expect("client reads response");
+
+        assert_eq!(line.trim_end(), "\"Ack\"");
+    }
+
+    #[test]
+    fn api_request_reads_json_line() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener binds");
+        let address = listener.local_addr().expect("listener has address");
+        let mut client = TcpStream::connect(address).expect("client connects");
+        let (server, _) = listener.accept().expect("server accepts");
+
+        writeln!(
+            client,
+            "{}",
+            serde_json::to_string(&ApiRequest::ListSessions).expect("request serializes")
+        )
+        .expect("client writes request");
+
+        assert_eq!(
+            read_api_request(&server).expect("request reads"),
+            ApiRequest::ListSessions
+        );
     }
 
     #[test]
