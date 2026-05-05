@@ -1,39 +1,46 @@
 use alacritty_terminal::{
     event::VoidListener,
     grid::Dimensions,
-    term::{cell::Flags, Config as AlacrittyConfig, Term as AlacrittyTerm},
-    vte::ansi::Processor as AnsiProcessor,
+    term::{cell::Cell, cell::Flags, Config as AlacrittyConfig, Term as AlacrittyTerm},
+    vte::ansi::{
+        Color as AnsiColor, CursorShape, NamedColor as AnsiNamedColor, Processor as AnsiProcessor,
+        Rgb as AnsiRgb,
+    },
 };
 use gpui::{
-    div, img, prelude::*, px, rgb, App, ClipboardItem, Context, FocusHandle, Focusable,
-    IntoElement, KeyDownEvent, ParentElement, Pixels, Render, SharedString, Size,
-    StatefulInteractiveElement, Styled, Window,
+    div, img, prelude::*, px, rgb, App, Bounds, ClipboardItem, Context, Element, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, FontWeight,
+    GlobalElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, ParentElement, Pixels, Point,
+    Render, SharedString, Size, StatefulInteractiveElement, Style, Styled, Subscription,
+    UTF16Selection, Window,
 };
 use lazyterm_core::{AgentKind, SessionId, SessionStatus, SessionSummary, WorkspaceRef};
 use lazyterm_pty::{terminal_size_to_pty_size, PtyHandle, PtySession, ShellCommand};
 use lazyterm_terminal::TerminalSize;
 use std::io;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
-const BG: u32 = 0x080808;
-const SIDEBAR: u32 = 0x171717;
-const SURFACE: u32 = 0x111111;
-const ROW_ACTIVE: u32 = 0x202020;
-const BORDER: u32 = 0x262626;
-const BORDER_ACTIVE: u32 = 0x6a6a6a;
+const BG: u32 = 0x050505;
+const SIDEBAR: u32 = 0x0d0d0d;
+const SURFACE: u32 = 0x101010;
+const ROW_ACTIVE: u32 = 0x242424;
+const BORDER: u32 = 0x202020;
+const BORDER_ACTIVE: u32 = 0x8f8f8f;
 const TEXT: u32 = 0xf2f2f2;
 const TEXT_SOFT: u32 = 0xc9c9c9;
 const TEXT_MUTED: u32 = 0x858585;
 const TEXT_DIM: u32 = 0x5f5f5f;
+const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const WORKSPACE_BAR_HEIGHT: f32 = 38.0;
-const SIDEBAR_WIDTH: f32 = 288.0;
+const SIDEBAR_WIDTH: f32 = 236.0;
 const SIDEBAR_COMPACT_WIDTH: f32 = 76.0;
-const SETTINGS_PANEL_WIDTH: f32 = 320.0;
+const SETTINGS_PANEL_WIDTH: f32 = 292.0;
 const TERMINAL_X_PADDING: f32 = 20.0;
 const TERMINAL_Y_PADDING: f32 = 16.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
@@ -47,6 +54,7 @@ pub struct LazytermApp {
     active_session: usize,
     poller_started: bool,
     initial_focus_done: bool,
+    keystroke_observer: Option<Subscription>,
     settings_open: bool,
     ui_settings: UiSettings,
 }
@@ -91,7 +99,41 @@ struct TerminalGrid {
     parser: AnsiProcessor,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TerminalGridRow {
+    runs: Vec<TerminalCellRun>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalCellStyle {
+    foreground: u32,
+    background: Option<u32>,
+    bold: bool,
+    dim: bool,
+    underline: bool,
+    cursor: CursorRender,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CursorRender {
+    None,
+    Block,
+    Beam,
+    Underline,
+    Hollow,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TerminalCellRun {
+    text: String,
+    style: TerminalCellStyle,
+}
+
 struct GridSize(TerminalSize);
+
+struct TerminalInputElement {
+    app: Entity<LazytermApp>,
+}
 
 impl LazytermApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -104,7 +146,7 @@ impl LazytermApp {
             "shell 1",
         )];
 
-        Self {
+        let mut app = Self {
             focus_handle: cx.focus_handle().tab_stop(true),
             cwd,
             branch,
@@ -112,6 +154,7 @@ impl LazytermApp {
             active_session: 0,
             poller_started: false,
             initial_focus_done: false,
+            keystroke_observer: None,
             settings_open: false,
             ui_settings: UiSettings {
                 compact_tabs: false,
@@ -119,7 +162,22 @@ impl LazytermApp {
                 tile_sessions: false,
                 terminal_font_size: 12.0,
             },
-        }
+        };
+
+        app.keystroke_observer = Some(cx.observe_keystrokes(|this, event, window, cx| {
+            if this.focus_handle.is_focused(window) {
+                return;
+            }
+
+            if this.handle_keystroke(&event.keystroke, cx)
+                || this.write_keystroke_to_active_pty(&event.keystroke)
+            {
+                this.focus_terminal(window, cx);
+                cx.notify();
+            }
+        }));
+
+        app
     }
 
     pub fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -186,16 +244,17 @@ impl LazytermApp {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let handled = self.handle_app_key(event, cx) || self.write_key_to_active_pty(event);
+        let handled = self.handle_keystroke(&event.keystroke, cx)
+            || self.write_keystroke_to_active_pty(&event.keystroke);
         if handled {
             cx.stop_propagation();
             cx.notify();
         }
     }
 
-    fn handle_app_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let key = event.keystroke.key.as_str();
-        let modifiers = event.keystroke.modifiers;
+    fn handle_keystroke(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let key = keystroke.key.as_str();
+        let modifiers = keystroke.modifiers;
         let primary = modifiers.platform || (modifiers.control && modifiers.shift);
 
         if self.settings_open && key == "escape" {
@@ -262,12 +321,12 @@ impl LazytermApp {
         false
     }
 
-    fn write_key_to_active_pty(&mut self, event: &KeyDownEvent) -> bool {
-        let bytes = match event.keystroke.key.as_str() {
+    fn write_keystroke_to_active_pty(&mut self, keystroke: &Keystroke) -> bool {
+        let bytes = match keystroke.key.as_str() {
             "enter" => Some(b"\r".as_slice()),
             "backspace" => Some(b"\x7f".as_slice()),
             "escape" => Some(b"\x1b".as_slice()),
-            "tab" if event.keystroke.modifiers.shift => Some(b"\x1b[Z".as_slice()),
+            "tab" if keystroke.modifiers.shift => Some(b"\x1b[Z".as_slice()),
             "tab" => Some(b"\t".as_slice()),
             "delete" => Some(b"\x1b[3~".as_slice()),
             "left" => Some(b"\x1b[D".as_slice()),
@@ -299,20 +358,20 @@ impl LazytermApp {
             return true;
         }
 
-        let modifiers = event.keystroke.modifiers;
+        let modifiers = keystroke.modifiers;
         if modifiers.platform || modifiers.function {
             return false;
         }
 
         if modifiers.control {
-            if let Some(byte) = control_byte_for_key(event.keystroke.key.as_str()) {
+            if let Some(byte) = control_byte_for_key(keystroke.key.as_str()) {
                 self.write_bytes_to_active_pty(&[byte]);
                 return true;
             }
             return false;
         }
 
-        let Some(input) = event.keystroke.key_char.as_ref() else {
+        let Some(input) = keystroke.key_char.as_ref() else {
             return false;
         };
 
@@ -482,18 +541,21 @@ impl LazytermApp {
                     .items_center()
                     .gap_1()
                     .child(self.render_titlebar_button(
-                        "set",
+                        "prefs",
                         "titlebar-settings",
                         cx,
                         |this, _| {
                             this.toggle_settings();
                         },
                     ))
-                    .child(
-                        self.render_titlebar_button("x", "window-close", cx, |_, window| {
+                    .child(self.render_titlebar_button(
+                        "close",
+                        "window-close",
+                        cx,
+                        |_, window| {
                             window.remove_window();
-                        }),
-                    ),
+                        },
+                    )),
             )
     }
 
@@ -562,8 +624,8 @@ impl LazytermApp {
                         .bg(rgb(BG))
                         .text_color(rgb(TEXT_SOFT))
                         .font_family("JetBrains Mono")
-                        .text_size(px(11.0))
-                        .child("new")
+                        .text_size(px(15.0))
+                        .child("+")
                         .id("new-terminal")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.create_terminal();
@@ -614,10 +676,7 @@ impl LazytermApp {
                             .text_color(rgb(TEXT_DIM))
                             .font_family("JetBrains Mono")
                             .text_size(px(11.0))
-                            .child(SharedString::from(format!(
-                                "{} shells",
-                                self.sessions.len()
-                            ))),
+                            .child(SharedString::from(format!("{} panes", self.sessions.len()))),
                     ),
             )
     }
@@ -630,31 +689,44 @@ impl LazytermApp {
             .px_2()
             .pb_2()
             .child(
-                self.render_sidebar_action("new", "sidebar-action-new", cx, |this| {
+                self.render_sidebar_action("+", "sidebar-action-new", false, cx, |this| {
                     this.create_terminal();
                 }),
             )
-            .child(
-                self.render_sidebar_action("restart", "sidebar-action-restart", cx, |this| {
+            .child(self.render_sidebar_action(
+                "restart",
+                "sidebar-action-restart",
+                false,
+                cx,
+                |this| {
                     this.restart_active_terminal();
-                }),
-            )
+                },
+            ))
             .child(
-                self.render_sidebar_action("close", "sidebar-action-close", cx, |this| {
+                self.render_sidebar_action("close", "sidebar-action-close", false, cx, |this| {
                     this.close_active_terminal();
                 }),
             )
-            .child(
-                self.render_sidebar_action("tile", "sidebar-action-tile", cx, |this| {
+            .child(self.render_sidebar_action(
+                if self.ui_settings.tile_sessions {
+                    "split on"
+                } else {
+                    "split"
+                },
+                "sidebar-action-tile",
+                self.ui_settings.tile_sessions,
+                cx,
+                |this| {
                     this.toggle_tile_sessions();
-                }),
-            )
+                },
+            ))
     }
 
     fn render_sidebar_action(
         &self,
         label: &'static str,
         id: &'static str,
+        active: bool,
         cx: &mut Context<Self>,
         action: impl Fn(&mut Self) + 'static,
     ) -> impl IntoElement {
@@ -666,9 +738,9 @@ impl LazytermApp {
             .px_2()
             .rounded_lg()
             .border_1()
-            .border_color(rgb(BORDER))
-            .bg(rgb(SURFACE))
-            .text_color(rgb(TEXT_MUTED))
+            .border_color(rgb(if active { BORDER_ACTIVE } else { BORDER }))
+            .bg(rgb(if active { ROW_ACTIVE } else { SURFACE }))
+            .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
             .font_family("JetBrains Mono")
             .text_size(px(11.0))
             .child(label)
@@ -798,8 +870,7 @@ impl LazytermApp {
         let mut tiles = div()
             .grid()
             .grid_cols(columns)
-            .gap_2()
-            .p_2()
+            .gap_0()
             .flex_1()
             .h_full()
             .bg(rgb(BG));
@@ -816,13 +887,9 @@ impl LazytermApp {
             .flex()
             .flex_col()
             .min_h(px(180.0))
-            .border_1()
-            .border_color(rgb(if index == self.active_session {
-                BORDER_ACTIVE
-            } else {
-                BORDER
-            }))
-            .rounded_lg()
+            .border_r_1()
+            .border_b_1()
+            .border_color(rgb(BORDER))
             .overflow_hidden()
             .child(self.render_terminal(index, index == self.active_session, cx))
             .id(format!("terminal-tile-{index}"))
@@ -879,7 +946,7 @@ impl LazytermApp {
             .px_3()
             .border_b_1()
             .border_color(rgb(BORDER))
-            .bg(rgb(SURFACE))
+            .bg(rgb(BG))
             .font_family("JetBrains Mono")
             .child(
                 div()
@@ -887,25 +954,24 @@ impl LazytermApp {
                     .items_center()
                     .gap_2()
                     .min_w(px(0.0))
+                    .child(div().size(px(7.0)).rounded_full().bg(rgb(
+                        if session_index == self.active_session {
+                            TEXT_SOFT
+                        } else {
+                            TEXT_FAINT
+                        },
+                    )))
                     .child(
                         div()
-                            .size(px(18.0))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(rgb(BORDER_ACTIVE))
-                            .bg(rgb(BG)),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(TEXT_SOFT))
+                            .text_color(rgb(TEXT_MUTED))
                             .text_size(px(12.0))
                             .child(SharedString::from(session_context_label(session))),
                     ),
             )
     }
 
-    fn render_grid_row(&self, row: String) -> impl IntoElement {
-        div()
+    fn render_grid_row(&self, row: TerminalGridRow) -> impl IntoElement {
+        let mut row_element = div()
             .flex()
             .items_start()
             .font_family("JetBrains Mono")
@@ -913,8 +979,40 @@ impl LazytermApp {
             .line_height(px(terminal_line_height(
                 self.ui_settings.terminal_font_size,
             )))
-            .text_color(rgb(TEXT_SOFT))
-            .child(SharedString::from(row))
+            .text_color(rgb(TEXT_SOFT));
+
+        for run in row.runs {
+            row_element = row_element.child(self.render_cell_run(run));
+        }
+
+        row_element
+    }
+
+    fn render_cell_run(&self, run: TerminalCellRun) -> impl IntoElement {
+        let mut run_element = div()
+            .font_family("JetBrains Mono")
+            .text_size(px(self.ui_settings.terminal_font_size))
+            .line_height(px(terminal_line_height(
+                self.ui_settings.terminal_font_size,
+            )))
+            .whitespace_nowrap()
+            .text_color(rgb(run.style.foreground))
+            .when_some(run.style.background, |this, background| {
+                this.text_bg(rgb(background))
+            })
+            .when(run.style.bold, |this| this.font_weight(FontWeight::BOLD))
+            .when(run.style.underline, |this| this.underline())
+            .child(SharedString::from(run.text));
+
+        run_element = match run.style.cursor {
+            CursorRender::None => run_element,
+            CursorRender::Block => run_element.text_bg(rgb(TEXT)).text_color(rgb(BG)),
+            CursorRender::Beam => run_element.border_l_1().border_color(rgb(TEXT)),
+            CursorRender::Underline => run_element.border_b_1().border_color(rgb(TEXT)),
+            CursorRender::Hollow => run_element.border_1().border_color(rgb(TEXT_MUTED)),
+        };
+
+        run_element
     }
 
     fn render_statusline(&self, focused: bool) -> impl IntoElement {
@@ -1268,43 +1366,99 @@ impl TerminalGrid {
         self.term.resize(GridSize(size));
     }
 
-    fn visible_rows(&self) -> Vec<String> {
+    fn visible_rows(&self) -> Vec<TerminalGridRow> {
         let columns = self.term.grid().columns();
         let rows = self.term.grid().screen_lines();
-        let cursor = self.term.grid().cursor.point;
+        let content = self.term.renderable_content();
+        let cursor = content.cursor;
         let mut visible = Vec::with_capacity(rows);
-        let mut current = String::with_capacity(columns);
+        let mut current = TerminalGridRow::new(columns);
 
-        for indexed in self.term.grid().display_iter() {
-            if indexed.point.column.0 == 0 && !current.is_empty() {
-                visible.push(trim_terminal_row(current));
-                current = String::with_capacity(columns);
+        for indexed in content.display_iter {
+            if indexed.point.column.0 == 0 && !current.runs.is_empty() {
+                visible.push(current.trimmed());
+                current = TerminalGridRow::new(columns);
             }
 
-            let mut character = if indexed.cell.flags.contains(Flags::HIDDEN)
-                || indexed.cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-            {
+            let mut character = if indexed.cell.flags.intersects(
+                Flags::HIDDEN | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER,
+            ) {
                 ' '
             } else {
                 indexed.cell.c
             };
 
-            if indexed.point == cursor {
-                character = if character == ' ' { '_' } else { character };
+            let cursor_render = cursor_render_at(cursor.shape, indexed.point == cursor.point);
+            if cursor_render == CursorRender::Block
+                && character == ' '
+                && indexed.cell.flags.contains(Flags::HIDDEN)
+            {
+                character = ' ';
             }
 
-            current.push(character);
+            let style = terminal_cell_style(indexed.cell, cursor_render);
+            current.push(character, style);
             if let Some(zerowidth) = indexed.cell.zerowidth() {
-                current.extend(zerowidth);
+                for character in zerowidth {
+                    current.push(*character, style);
+                }
             }
         }
 
-        visible.push(trim_terminal_row(current));
+        visible.push(current.trimmed());
         while visible.len() < rows {
-            visible.push(String::new());
+            visible.push(TerminalGridRow::default());
         }
 
         visible
+    }
+}
+
+impl TerminalGridRow {
+    fn new(columns: usize) -> Self {
+        Self {
+            runs: Vec::with_capacity(columns.min(120)),
+        }
+    }
+
+    fn push(&mut self, character: char, style: TerminalCellStyle) {
+        if let Some(run) = self.runs.last_mut() {
+            if run.style == style {
+                run.text.push(character);
+                return;
+            }
+        }
+
+        self.runs.push(TerminalCellRun {
+            text: character.to_string(),
+            style,
+        });
+    }
+
+    fn trimmed(mut self) -> Self {
+        while let Some(run) = self.runs.last_mut() {
+            if run.style.background.is_some() || run.style.cursor != CursorRender::None {
+                break;
+            }
+
+            let trimmed_len = run.text.trim_end_matches(' ').len();
+            run.text.truncate(trimmed_len);
+            if !run.text.is_empty() {
+                break;
+            }
+            self.runs.pop();
+        }
+
+        self
+    }
+
+    #[cfg(test)]
+    fn plain_text(&self) -> String {
+        let mut text = String::new();
+        for run in &self.runs {
+            text.push_str(&run.text);
+        }
+        text
     }
 }
 
@@ -1319,6 +1473,146 @@ impl Dimensions for GridSize {
 
     fn columns(&self) -> usize {
         usize::from(self.0.columns)
+    }
+}
+
+impl IntoElement for TerminalInputElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for TerminalInputElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = px(1.0).into();
+        style.size.height = px(1.0).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let focus_handle = self.app.read(cx).focus_handle.clone();
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.app.clone()),
+            cx,
+        );
+    }
+}
+
+impl EntityInputHandler for LazytermApp {
+    fn text_for_range(
+        &mut self,
+        _range: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        *adjusted_range = Some(0..0);
+        Some(String::new())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.write_bytes_to_active_pty(text.as_bytes());
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.write_bytes_to_active_pty(new_text.as_bytes());
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        Some(element_bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        Some(0)
     }
 }
 
@@ -1364,6 +1658,7 @@ impl Render for LazytermApp {
             .on_key_down(cx.listener(Self::on_key_down))
             .id("lazyterm-root")
             .on_click(cx.listener(|this, _, window, cx| this.focus_terminal(window, cx)))
+            .child(TerminalInputElement { app: cx.entity() })
             .child(self.render_titlebar(cx))
             .child(
                 div()
@@ -1453,10 +1748,132 @@ fn session_context_label(session: &TerminalSession) -> String {
     }
 }
 
-fn trim_terminal_row(mut row: String) -> String {
-    let trimmed = row.trim_end_matches(' ').len();
-    row.truncate(trimmed);
-    row
+fn terminal_cell_style(cell: &Cell, cursor: CursorRender) -> TerminalCellStyle {
+    let mut foreground = terminal_color(cell.fg, false);
+    let mut background = terminal_background(cell.bg);
+    let bold = cell.flags.contains(Flags::BOLD);
+    let dim = cell.flags.contains(Flags::DIM);
+
+    if bold && matches!(cell.fg, AnsiColor::Named(AnsiNamedColor::Foreground)) {
+        foreground = TEXT;
+    }
+    if dim {
+        foreground = dim_color(foreground);
+    }
+    if cell.flags.contains(Flags::INVERSE) {
+        let next_foreground = background.unwrap_or(BG);
+        background = Some(foreground);
+        foreground = next_foreground;
+    }
+
+    TerminalCellStyle {
+        foreground,
+        background,
+        bold,
+        dim,
+        underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
+        cursor,
+    }
+}
+
+fn terminal_color(color: AnsiColor, background: bool) -> u32 {
+    match color {
+        AnsiColor::Named(named) => terminal_named_color(named, background),
+        AnsiColor::Spec(rgb) => rgb_to_u32(rgb),
+        AnsiColor::Indexed(index) => terminal_indexed_color(index),
+    }
+}
+
+fn terminal_background(color: AnsiColor) -> Option<u32> {
+    match color {
+        AnsiColor::Named(AnsiNamedColor::Background) => None,
+        AnsiColor::Named(named) => Some(terminal_named_color(named, true)),
+        AnsiColor::Spec(rgb) => Some(rgb_to_u32(rgb)),
+        AnsiColor::Indexed(index) => Some(terminal_indexed_color(index)),
+    }
+}
+
+fn terminal_named_color(color: AnsiNamedColor, background: bool) -> u32 {
+    match color {
+        AnsiNamedColor::Foreground => TEXT_SOFT,
+        AnsiNamedColor::Background => BG,
+        AnsiNamedColor::BrightForeground => TEXT,
+        AnsiNamedColor::DimForeground => TEXT_DIM,
+        AnsiNamedColor::Cursor => TEXT,
+        AnsiNamedColor::Black => 0x111111,
+        AnsiNamedColor::Red => 0xd75f5f,
+        AnsiNamedColor::Green => 0x87af87,
+        AnsiNamedColor::Yellow => 0xd7af5f,
+        AnsiNamedColor::Blue => 0x87afd7,
+        AnsiNamedColor::Magenta => 0xaf87d7,
+        AnsiNamedColor::Cyan => 0x87d7d7,
+        AnsiNamedColor::White => 0xd0d0d0,
+        AnsiNamedColor::BrightBlack => 0x6c6c6c,
+        AnsiNamedColor::BrightRed => 0xff8787,
+        AnsiNamedColor::BrightGreen => 0xafffaf,
+        AnsiNamedColor::BrightYellow => 0xffff87,
+        AnsiNamedColor::BrightBlue => 0xafd7ff,
+        AnsiNamedColor::BrightMagenta => 0xd7afff,
+        AnsiNamedColor::BrightCyan => 0xafffff,
+        AnsiNamedColor::BrightWhite => 0xffffff,
+        AnsiNamedColor::DimBlack => 0x080808,
+        AnsiNamedColor::DimRed => 0x875f5f,
+        AnsiNamedColor::DimGreen => 0x5f875f,
+        AnsiNamedColor::DimYellow => 0x87875f,
+        AnsiNamedColor::DimBlue => 0x5f5f87,
+        AnsiNamedColor::DimMagenta => 0x875f87,
+        AnsiNamedColor::DimCyan => 0x5f8787,
+        AnsiNamedColor::DimWhite => 0x878787,
+    }
+    .max(if background { BG } else { 0 })
+}
+
+fn terminal_indexed_color(index: u8) -> u32 {
+    const ANSI: [u32; 16] = [
+        0x111111, 0xd75f5f, 0x87af87, 0xd7af5f, 0x87afd7, 0xaf87d7, 0x87d7d7, 0xd0d0d0, 0x6c6c6c,
+        0xff8787, 0xafffaf, 0xffff87, 0xafd7ff, 0xd7afff, 0xafffff, 0xffffff,
+    ];
+
+    if let Some(color) = ANSI.get(usize::from(index)) {
+        return *color;
+    }
+
+    if (16..=231).contains(&index) {
+        let value = index - 16;
+        let component = |step: u8| if step == 0 { 0 } else { 55 + (step * 40) };
+        let red = component(value / 36);
+        let green = component((value % 36) / 6);
+        let blue = component(value % 6);
+        return (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue);
+    }
+
+    let gray = 8 + ((index.saturating_sub(232)) * 10);
+    (u32::from(gray) << 16) | (u32::from(gray) << 8) | u32::from(gray)
+}
+
+fn rgb_to_u32(color: AnsiRgb) -> u32 {
+    (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)
+}
+
+fn dim_color(color: u32) -> u32 {
+    let red = ((color >> 16) & 0xff) / 2;
+    let green = ((color >> 8) & 0xff) / 2;
+    let blue = (color & 0xff) / 2;
+    (red << 16) | (green << 8) | blue
+}
+
+fn cursor_render_at(shape: CursorShape, at_cursor: bool) -> CursorRender {
+    if !at_cursor {
+        return CursorRender::None;
+    }
+
+    match shape {
+        CursorShape::Block => CursorRender::Block,
+        CursorShape::Underline => CursorRender::Underline,
+        CursorShape::Beam => CursorRender::Beam,
+        CursorShape::HollowBlock => CursorRender::Hollow,
+        CursorShape::Hidden => CursorRender::None,
+    }
 }
 
 fn normalize_pty_output(output: &str) -> String {
@@ -1503,6 +1920,7 @@ fn current_branch() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritty_terminal::vte::ansi::{Color, Rgb};
 
     #[test]
     fn normalizes_crlf_without_double_newlines() {
@@ -1534,6 +1952,66 @@ mod tests {
     }
 
     #[test]
+    fn control_byte_for_key_accepts_uppercase_letters() {
+        assert_eq!(control_byte_for_key("C"), Some(0x03));
+    }
+
+    #[test]
+    fn terminal_grid_preserves_truecolor_foreground() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"\x1b[38;2;10;20;30mX");
+
+        let cell = grid
+            .term
+            .grid()
+            .display_iter()
+            .find(|indexed| indexed.cell.c == 'X')
+            .expect("expected X cell");
+
+        assert_eq!(
+            cell.cell.fg,
+            Color::Spec(Rgb {
+                r: 10,
+                g: 20,
+                b: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_grid_preserves_bold_attribute() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"\x1b[1mX");
+
+        let cell = grid
+            .term
+            .grid()
+            .display_iter()
+            .find(|indexed| indexed.cell.c == 'X')
+            .expect("expected X cell");
+
+        assert!(cell.cell.flags.contains(Flags::BOLD));
+    }
+
+    #[test]
+    fn terminal_grid_preserves_underline_attribute() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"\x1b[4mX");
+
+        let cell = grid
+            .term
+            .grid()
+            .display_iter()
+            .find(|indexed| indexed.cell.c == 'X')
+            .expect("expected X cell");
+
+        assert!(cell.cell.flags.contains(Flags::UNDERLINE));
+    }
+
+    #[test]
     fn maps_number_shortcuts_to_session_indexes() {
         assert_eq!(tab_index_for_key("1"), Some(0));
         assert_eq!(tab_index_for_key("9"), Some(8));
@@ -1548,7 +2026,11 @@ mod tests {
         grid.feed(b"hello\x1b[1D!");
         let rows = grid.visible_rows();
 
-        assert_eq!(rows[0], "hell!_");
+        assert_eq!(rows[0].plain_text().trim_end(), "hell!");
+        assert_eq!(
+            rows[0].runs.last().map(|run| run.style.cursor),
+            Some(CursorRender::Block)
+        );
     }
 
     #[test]
@@ -1558,8 +2040,40 @@ mod tests {
         grid.feed(b"before\x1b[2J\x1b[Hafter");
         let rows = grid.visible_rows();
 
-        assert_eq!(rows[0], "after_");
-        assert!(rows.iter().skip(1).all(String::is_empty));
+        assert_eq!(rows[0].plain_text().trim_end(), "after");
+        assert!(rows.iter().skip(1).all(|row| row.runs.is_empty()));
+    }
+
+    #[test]
+    fn terminal_grid_keeps_ansi_style_runs() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"\x1b[31mred\x1b[0m plain");
+        let rows = grid.visible_rows();
+
+        assert_eq!(rows[0].plain_text().trim_end(), "red plain");
+        assert!(rows[0]
+            .runs
+            .iter()
+            .any(|run| run.text == "red" && run.style.foreground == 0xd75f5f));
+    }
+
+    #[test]
+    fn terminal_grid_keeps_inverse_and_underline_attributes() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"\x1b[7mrev\x1b[0m \x1b[4mul\x1b[0m");
+        let rows = grid.visible_rows();
+
+        assert_eq!(rows[0].plain_text().trim_end(), "rev ul");
+        assert!(rows[0]
+            .runs
+            .iter()
+            .any(|run| run.text == "rev" && run.style.background == Some(TEXT_SOFT)));
+        assert!(rows[0]
+            .runs
+            .iter()
+            .any(|run| run.text == "ul" && run.style.underline));
     }
 
     #[test]

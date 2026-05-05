@@ -26,6 +26,9 @@
 - [x] Tiled multiplexer view for watching multiple shells at once
 - [x] Terminal surface takes focus on app launch
 - [x] Alacritty-backed terminal grid for ANSI parsing and cursor movement
+- [x] Per-cell foreground/background, bold, dim, inverse, underline, and cursor rendering from Alacritty
+- [x] Regenerated Windows app icon from the black-background Lazyterm logo
+- [x] Tighter monochrome chrome pass: narrower rail, cleaner split mode, and less placeholder copy
 
 ## Next
 
@@ -33,7 +36,6 @@
 - [ ] Replace demo sessions with persisted session state
 - [ ] Add real split-pane resize handles and per-pane PTY sizing
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
-- [ ] Render per-cell colors, bold/dim, inverse, underline, and cursor shape from the Alacritty grid
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
 - [ ] Add integration coverage for app/UI/API/git boundary crates

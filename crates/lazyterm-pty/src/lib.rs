@@ -15,15 +15,18 @@ pub struct ShellCommand {
 
 impl ShellCommand {
     pub fn default_for_platform() -> Self {
-        let program = if cfg!(windows) {
-            default_windows_shell_program(env::var("COMSPEC").ok())
+        let (program, args) = if cfg!(windows) {
+            default_windows_shell(env::var("COMSPEC").ok())
         } else {
-            default_unix_shell_program(env::var("SHELL").ok())
+            (
+                default_unix_shell_program(env::var("SHELL").ok()),
+                Vec::new(),
+            )
         };
 
         Self {
             program,
-            args: Vec::new(),
+            args,
             cwd: None,
         }
     }
@@ -40,8 +43,36 @@ impl ShellCommand {
     }
 }
 
-fn default_windows_shell_program(comspec: Option<String>) -> String {
-    comspec.unwrap_or_else(|| "cmd.exe".into())
+fn default_windows_shell(comspec: Option<String>) -> (String, Vec<String>) {
+    default_windows_shell_with(
+        comspec,
+        shell_program_on_path("pwsh.exe"),
+        shell_program_on_path("powershell.exe"),
+    )
+}
+
+fn default_windows_shell_with(
+    comspec: Option<String>,
+    has_pwsh: bool,
+    has_powershell: bool,
+) -> (String, Vec<String>) {
+    if has_pwsh {
+        return ("pwsh.exe".into(), vec!["-NoLogo".into()]);
+    }
+
+    if has_powershell {
+        return ("powershell.exe".into(), vec!["-NoLogo".into()]);
+    }
+
+    (comspec.unwrap_or_else(|| "cmd.exe".into()), Vec::new())
+}
+
+fn shell_program_on_path(program: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+
+    env::split_paths(&path).any(|directory| directory.join(program).is_file())
 }
 
 fn default_unix_shell_program(shell: Option<String>) -> String {
@@ -201,10 +232,26 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_default_shell_falls_back_to_cmd() {
-        assert_eq!(default_windows_shell_program(None), "cmd.exe");
         assert_eq!(
-            default_windows_shell_program(Some("custom.exe".into())),
-            "custom.exe"
+            default_windows_shell_with(None, false, false),
+            ("cmd.exe".into(), Vec::new())
+        );
+        assert_eq!(
+            default_windows_shell_with(Some("custom.exe".into()), false, false),
+            ("custom.exe".into(), Vec::new())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_shell_prefers_powershell() {
+        assert_eq!(
+            default_windows_shell_with(Some("cmd.exe".into()), true, true),
+            ("pwsh.exe".into(), vec!["-NoLogo".into()])
+        );
+        assert_eq!(
+            default_windows_shell_with(Some("cmd.exe".into()), false, true),
+            ("powershell.exe".into(), vec!["-NoLogo".into()])
         );
     }
 
