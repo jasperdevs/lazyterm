@@ -1493,7 +1493,11 @@ impl LazytermApp {
     fn filtered_commands(&self) -> Vec<CommandItem> {
         let query = self.command_palette_query.trim().to_ascii_lowercase();
         if query.is_empty() {
-            return self.commands();
+            return self
+                .commands()
+                .into_iter()
+                .filter(is_default_palette_command)
+                .collect();
         }
 
         self.commands()
@@ -2321,17 +2325,17 @@ impl LazytermApp {
             .flex()
             .items_center()
             .justify_between()
-            .min_h(px(36.0))
+            .min_h(px(32.0))
             .px_3()
-            .rounded(px(4.0))
+            .rounded(px(3.0))
+            .border_l_1()
+            .border_color(rgb(if selected { TEXT } else { BG }))
             .bg(rgb(if selected { ROW_ACTIVE } else { BG }))
-            .border_1()
-            .border_color(rgb(if selected { TEXT_SOFT } else { BORDER }))
             .hover(|this| this.bg(rgb(ROW_ACTIVE)).border_color(rgb(TEXT_DIM)))
             .child(
                 div()
                     .text_color(rgb(if selected { TEXT } else { TEXT_SOFT }))
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .child(SharedString::from(command.label.clone())),
             )
             .when(!detail.is_empty(), |this| {
@@ -2341,7 +2345,7 @@ impl LazytermApp {
                         .items_center()
                         .justify_center()
                         .text_color(rgb(TEXT_DIM))
-                        .text_size(px(11.0))
+                        .text_size(px(10.0))
                         .child(SharedString::from(detail.clone())),
                 )
             })
@@ -2367,12 +2371,12 @@ impl LazytermApp {
             .flex()
             .items_center()
             .justify_between()
-            .min_h(px(36.0))
+            .min_h(px(32.0))
             .px_3()
-            .rounded(px(4.0))
-            .bg(rgb(SURFACE))
-            .border_1()
-            .border_color(rgb(BORDER_ACTIVE))
+            .rounded(px(3.0))
+            .bg(rgb(BG))
+            .border_b_1()
+            .border_color(rgb(BORDER))
             .child(
                 div()
                     .text_color(rgb(if self.command_palette_query.is_empty() {
@@ -2380,7 +2384,7 @@ impl LazytermApp {
                     } else {
                         TEXT
                     }))
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .child(SharedString::from(text)),
             )
     }
@@ -3555,6 +3559,24 @@ fn command_detail(command: &CommandItem) -> String {
     }
 }
 
+fn is_default_palette_command(command: &CommandItem) -> bool {
+    matches!(
+        command.kind,
+        CommandKind::NewShell
+            | CommandKind::NewCodex
+            | CommandKind::SplitPane
+            | CommandKind::MaximizePane
+            | CommandKind::FocusAttention
+            | CommandKind::FocusLeft
+            | CommandKind::FocusRight
+            | CommandKind::RestartPane
+            | CommandKind::ClosePane
+            | CommandKind::CloseOtherPanes
+            | CommandKind::CopyTranscript
+            | CommandKind::Paste
+    )
+}
+
 fn session_needs_attention(session: &TerminalSession) -> bool {
     matches!(
         session.summary.status,
@@ -4228,6 +4250,34 @@ mod tests {
         };
 
         assert_eq!(command_label(&command), "pwsh.exe -NoLogo -NoProfile");
+    }
+
+    #[test]
+    fn empty_palette_keeps_settings_out_of_default_actions() {
+        assert!(is_default_palette_command(&CommandItem::new(
+            CommandKind::NewShell,
+            "new shell",
+            "",
+            "",
+        )));
+        assert!(is_default_palette_command(&CommandItem::new(
+            CommandKind::SplitPane,
+            "split pane",
+            "",
+            "",
+        )));
+        assert!(!is_default_palette_command(&CommandItem::new(
+            CommandKind::RailWide,
+            "wide rail",
+            "",
+            "",
+        )));
+        assert!(!is_default_palette_command(&CommandItem::new(
+            CommandKind::DensityRoomy,
+            "roomy density",
+            "",
+            "",
+        )));
     }
 
     #[test]

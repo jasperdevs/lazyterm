@@ -70,7 +70,7 @@
 - [x] Full-window hidden text input target for more reliable terminal typing focus
 - [x] Modified terminal key sequences for Ctrl/Alt/Shift navigation and word-editing chords
 - [x] Regression coverage for legacy settings defaulting to compact rail and modified terminal keys
-- [ ] Reduce command palette/action chrome to a serious terminal command surface
+- [x] Reduce command palette/action chrome to a serious terminal command surface
 - [ ] Audit common terminal editing chords against native shells and TUIs
 - [ ] Add stronger terminal interaction coverage for printable typing, paste, and shortcuts
 
