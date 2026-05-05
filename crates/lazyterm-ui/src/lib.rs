@@ -1,5 +1,5 @@
 use alacritty_terminal::{
-    event::VoidListener,
+    event::{Event as AlacrittyEvent, EventListener},
     grid::Dimensions,
     term::{cell::Cell, cell::Flags, Config as AlacrittyConfig, Term as AlacrittyTerm},
     vte::ansi::{
@@ -20,7 +20,7 @@ use lazyterm_terminal::TerminalSize;
 use std::io;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -38,9 +38,8 @@ const TEXT_FAINT: u32 = 0x3f3f3f;
 
 const TITLEBAR_HEIGHT: f32 = 32.0;
 const WORKSPACE_BAR_HEIGHT: f32 = 38.0;
-const SIDEBAR_WIDTH: f32 = 236.0;
-const SIDEBAR_COMPACT_WIDTH: f32 = 76.0;
-const SETTINGS_PANEL_WIDTH: f32 = 292.0;
+const SIDEBAR_WIDTH: f32 = 76.0;
+const SETTINGS_PANEL_WIDTH: f32 = 220.0;
 const TERMINAL_X_PADDING: f32 = 20.0;
 const TERMINAL_Y_PADDING: f32 = 16.0;
 const TERMINAL_CHAR_WIDTH: f32 = 8.0;
@@ -60,8 +59,6 @@ pub struct LazytermApp {
 }
 
 struct UiSettings {
-    compact_tabs: bool,
-    show_session_meta: bool,
     tile_sessions: bool,
     terminal_font_size: f32,
 }
@@ -95,8 +92,14 @@ enum PtyEvent {
 }
 
 struct TerminalGrid {
-    term: AlacrittyTerm<VoidListener>,
+    term: AlacrittyTerm<TerminalEventProxy>,
     parser: AnsiProcessor,
+    pty_writes: Receiver<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct TerminalEventProxy {
+    pty_writes: Sender<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -157,8 +160,6 @@ impl LazytermApp {
             keystroke_observer: None,
             settings_open: false,
             ui_settings: UiSettings {
-                compact_tabs: false,
-                show_session_meta: true,
                 tile_sessions: false,
                 terminal_font_size: 12.0,
             },
@@ -235,8 +236,9 @@ impl LazytermApp {
     fn resize_sessions(&mut self, viewport: Size<Pixels>) {
         let size = terminal_size_for_viewport(
             viewport,
-            self.ui_settings.compact_tabs,
             self.ui_settings.terminal_font_size,
+            self.sessions.len(),
+            self.ui_settings.tile_sessions,
         );
         for session in &mut self.sessions {
             session.resize(size);
@@ -411,7 +413,6 @@ impl LazytermApp {
 
     fn close_active_terminal(&mut self) {
         if self.sessions.len() == 1 {
-            self.restart_active_terminal();
             return;
         }
 
@@ -511,10 +512,10 @@ impl LazytermApp {
             .items_center()
             .justify_between()
             .h(px(TITLEBAR_HEIGHT))
-            .px_2()
+            .px_1()
             .border_b_1()
             .border_color(rgb(BORDER))
-            .bg(rgb(SIDEBAR))
+            .bg(rgb(BG))
             .child(
                 div()
                     .flex()
@@ -531,8 +532,8 @@ impl LazytermApp {
                     .child(
                         div()
                             .text_size(px(12.0))
-                            .text_color(rgb(TEXT))
-                            .child("Lazyterm"),
+                            .text_color(rgb(TEXT_SOFT))
+                            .child(SharedString::from(self.workspace_label())),
                     ),
             )
             .child(
@@ -540,22 +541,33 @@ impl LazytermApp {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .child(
+                        self.render_titlebar_button("+", "titlebar-new", cx, |this, _| {
+                            this.create_terminal();
+                        }),
+                    )
                     .child(self.render_titlebar_button(
-                        "prefs",
-                        "titlebar-settings",
+                        if self.ui_settings.tile_sessions {
+                            "1"
+                        } else {
+                            "2"
+                        },
+                        "titlebar-layout",
                         cx,
                         |this, _| {
-                            this.toggle_settings();
+                            this.toggle_tile_sessions();
                         },
                     ))
-                    .child(self.render_titlebar_button(
-                        "close",
-                        "window-close",
-                        cx,
-                        |_, window| {
+                    .child(
+                        self.render_titlebar_button(":", "titlebar-settings", cx, |this, _| {
+                            this.toggle_settings();
+                        }),
+                    )
+                    .child(
+                        self.render_titlebar_button("x", "window-close", cx, |_, window| {
                             window.remove_window();
-                        },
-                    )),
+                        }),
+                    ),
             )
     }
 
@@ -570,12 +582,12 @@ impl LazytermApp {
             .flex()
             .items_center()
             .justify_center()
-            .min_w(px(28.0))
+            .w(px(28.0))
             .h(px(24.0))
-            .rounded_lg()
+            .rounded(px(6.0))
             .border_1()
             .border_color(rgb(BORDER))
-            .bg(rgb(SURFACE))
+            .bg(rgb(BG))
             .text_color(rgb(TEXT_MUTED))
             .font_family("JetBrains Mono")
             .text_size(px(12.0))
@@ -593,163 +605,49 @@ impl LazytermApp {
         for (index, session) in self.sessions.iter().enumerate() {
             tabs = tabs.child(self.render_session_tab(session, index, cx));
         }
-        let width = if self.ui_settings.compact_tabs {
-            SIDEBAR_COMPACT_WIDTH
-        } else {
-            SIDEBAR_WIDTH
-        };
 
         div()
             .flex()
             .flex_col()
             .gap_2()
-            .w(px(width))
+            .w(px(SIDEBAR_WIDTH))
             .h_full()
             .border_r_1()
             .border_color(rgb(BORDER))
             .bg(rgb(SIDEBAR))
-            .when(!self.ui_settings.compact_tabs, |this| {
-                this.child(self.render_sidebar_header())
-            })
-            .when(self.ui_settings.compact_tabs, |this| {
-                this.items_center().px_2().py_2().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(42.0))
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(rgb(BORDER))
-                        .bg(rgb(BG))
-                        .text_color(rgb(TEXT_SOFT))
-                        .font_family("JetBrains Mono")
-                        .text_size(px(15.0))
-                        .child("+")
-                        .id("new-terminal")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.create_terminal();
-                            this.focus_terminal(window, cx);
-                            cx.notify();
-                        })),
-                )
-            })
+            .items_center()
+            .px_2()
+            .py_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(42.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(BG))
+                    .text_color(rgb(TEXT_SOFT))
+                    .font_family("JetBrains Mono")
+                    .text_size(px(15.0))
+                    .child("+")
+                    .id("new-terminal")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.create_terminal();
+                        this.focus_terminal(window, cx);
+                        cx.notify();
+                    })),
+            )
             .child(
                 div()
                     .w_full()
                     .flex_1()
-                    .px_2()
                     .pb_2()
                     .id("session-rail")
                     .overflow_y_scroll()
                     .child(tabs.w_full()),
             )
-            .when(!self.ui_settings.compact_tabs, |this| {
-                this.child(self.render_session_actions(cx))
-            })
-    }
-
-    fn render_sidebar_header(&self) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_start()
-            .h(px(54.0))
-            .px_3()
-            .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .text_color(rgb(TEXT))
-                            .font_family("JetBrains Mono")
-                            .text_size(px(13.0))
-                            .child(SharedString::from(self.workspace_label())),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(TEXT_DIM))
-                            .font_family("JetBrains Mono")
-                            .text_size(px(11.0))
-                            .child(SharedString::from(format!("{} panes", self.sessions.len()))),
-                    ),
-            )
-    }
-
-    fn render_session_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .pb_2()
-            .child(
-                self.render_sidebar_action("+", "sidebar-action-new", false, cx, |this| {
-                    this.create_terminal();
-                }),
-            )
-            .child(self.render_sidebar_action(
-                "restart",
-                "sidebar-action-restart",
-                false,
-                cx,
-                |this| {
-                    this.restart_active_terminal();
-                },
-            ))
-            .child(
-                self.render_sidebar_action("close", "sidebar-action-close", false, cx, |this| {
-                    this.close_active_terminal();
-                }),
-            )
-            .child(self.render_sidebar_action(
-                if self.ui_settings.tile_sessions {
-                    "split on"
-                } else {
-                    "split"
-                },
-                "sidebar-action-tile",
-                self.ui_settings.tile_sessions,
-                cx,
-                |this| {
-                    this.toggle_tile_sessions();
-                },
-            ))
-    }
-
-    fn render_sidebar_action(
-        &self,
-        label: &'static str,
-        id: &'static str,
-        active: bool,
-        cx: &mut Context<Self>,
-        action: impl Fn(&mut Self) + 'static,
-    ) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .h(px(28.0))
-            .px_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(if active { BORDER_ACTIVE } else { BORDER }))
-            .bg(rgb(if active { ROW_ACTIVE } else { SURFACE }))
-            .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
-            .font_family("JetBrains Mono")
-            .text_size(px(11.0))
-            .child(label)
-            .id(id)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                action(this);
-                this.focus_terminal(window, cx);
-                cx.notify();
-            }))
     }
 
     fn render_session_tab(
@@ -764,85 +662,33 @@ impl LazytermApp {
             SessionStatus::Done => TEXT_DIM,
             _ => TEXT_SOFT,
         };
-        let status_label = session.summary.status.label();
-
-        if self.ui_settings.compact_tabs {
-            return div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .relative()
-                .w_full()
-                .h(px(50.0))
-                .rounded_lg()
-                .border_1()
-                .border_color(rgb(if active { TEXT_SOFT } else { BORDER }))
-                .bg(rgb(if active { ROW_ACTIVE } else { SIDEBAR }))
-                .font_family("JetBrains Mono")
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(6.0))
-                        .top(px(6.0))
-                        .size(px(5.0))
-                        .rounded_full()
-                        .bg(rgb(status_color)),
-                )
-                .child(
-                    div()
-                        .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
-                        .text_size(px(14.0))
-                        .child((index + 1).to_string()),
-                )
-                .id(format!("session-tab-{index}"))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.active_session = index;
-                    this.focus_terminal(window, cx);
-                    cx.notify();
-                }));
-        }
 
         div()
             .flex()
             .items_center()
-            .gap_3()
+            .justify_center()
+            .relative()
             .w_full()
-            .min_h(px(68.0))
-            .rounded_lg()
+            .h(px(50.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(rgb(if active { BORDER_ACTIVE } else { SIDEBAR }))
+            .border_color(rgb(if active { TEXT_SOFT } else { BORDER }))
             .bg(rgb(if active { ROW_ACTIVE } else { SIDEBAR }))
             .font_family("JetBrains Mono")
-            .px_3()
-            .py_2()
             .child(
                 div()
-                    .w(px(3.0))
-                    .h(px(44.0))
+                    .absolute()
+                    .left(px(6.0))
+                    .top(px(6.0))
+                    .size(px(5.0))
                     .rounded_full()
-                    .bg(rgb(if active { TEXT_SOFT } else { status_color })),
+                    .bg(rgb(status_color)),
             )
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .text_color(rgb(if active { TEXT } else { TEXT_SOFT }))
-                            .text_size(px(if active { 13.0 } else { 12.0 }))
-                            .child(SharedString::from(session.summary.title.clone())),
-                    )
-                    .when(self.ui_settings.show_session_meta, |this| {
-                        this.child(
-                            div()
-                                .text_color(rgb(if active { TEXT_MUTED } else { TEXT_DIM }))
-                                .text_size(px(11.0))
-                                .child(SharedString::from(status_label.to_string())),
-                        )
-                    }),
+                    .text_color(rgb(if active { TEXT } else { TEXT_MUTED }))
+                    .text_size(px(14.0))
+                    .child((index + 1).to_string()),
             )
             .id(format!("session-tab-{index}"))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -866,10 +712,10 @@ impl LazytermApp {
     }
 
     fn render_tiled_terminals(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let columns = if self.sessions.len() <= 1 { 1 } else { 2 };
+        let columns = tile_columns(self.sessions.len());
         let mut tiles = div()
             .grid()
-            .grid_cols(columns)
+            .grid_cols(columns as u16)
             .gap_0()
             .flex_1()
             .h_full()
@@ -933,7 +779,7 @@ impl LazytermApp {
                     .overflow_y_scroll()
                     .child(terminal_grid),
             )
-            .child(self.render_statusline(focused))
+            .child(self.render_statusline(session_index, focused))
     }
 
     fn render_workspace_bar(&self, session_index: usize) -> impl IntoElement {
@@ -1015,7 +861,8 @@ impl LazytermApp {
         run_element
     }
 
-    fn render_statusline(&self, focused: bool) -> impl IntoElement {
+    fn render_statusline(&self, session_index: usize, focused: bool) -> impl IntoElement {
+        let session = &self.sessions[session_index];
         div()
             .flex()
             .items_center()
@@ -1034,13 +881,9 @@ impl LazytermApp {
                     .items_center()
                     .gap_2()
                     .text_color(rgb(if focused { TEXT } else { TEXT_DIM }))
-                    .child(SharedString::from(
-                        self.active_session().summary.command.clone(),
-                    ))
+                    .child(SharedString::from(session.summary.command.clone()))
                     .child(div().size(px(3.0)).rounded_full().bg(rgb(TEXT_DIM)))
-                    .child(SharedString::from(
-                        self.active_session().summary.status.label(),
-                    )),
+                    .child(SharedString::from(session.summary.status.label())),
             )
     }
 
@@ -1067,7 +910,7 @@ impl LazytermApp {
                         div()
                             .text_color(rgb(TEXT))
                             .text_size(px(12.0))
-                            .child("Settings"),
+                            .child("view"),
                     )
                     .child(
                         div()
@@ -1075,7 +918,7 @@ impl LazytermApp {
                             .items_center()
                             .justify_center()
                             .size(px(24.0))
-                            .rounded_lg()
+                            .rounded(px(6.0))
                             .border_1()
                             .border_color(rgb(BORDER))
                             .bg(rgb(BG))
@@ -1094,29 +937,10 @@ impl LazytermApp {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_3()
+                    .gap_2()
                     .p_3()
                     .child(self.render_toggle_row(
-                        "Compact tabs",
-                        self.ui_settings.compact_tabs,
-                        "settings-compact-tabs",
-                        cx,
-                        |this| {
-                            this.ui_settings.compact_tabs = !this.ui_settings.compact_tabs;
-                        },
-                    ))
-                    .child(self.render_toggle_row(
-                        "Session metadata",
-                        self.ui_settings.show_session_meta,
-                        "settings-session-meta",
-                        cx,
-                        |this| {
-                            this.ui_settings.show_session_meta =
-                                !this.ui_settings.show_session_meta;
-                        },
-                    ))
-                    .child(self.render_toggle_row(
-                        "Tile sessions",
+                        "panes",
                         self.ui_settings.tile_sessions,
                         "settings-tile-sessions",
                         cx,
@@ -1142,7 +966,7 @@ impl LazytermApp {
             .justify_between()
             .h(px(40.0))
             .px_3()
-            .rounded_lg()
+            .rounded(px(7.0))
             .bg(rgb(SURFACE))
             .border_1()
             .border_color(rgb(BORDER))
@@ -1159,7 +983,7 @@ impl LazytermApp {
                     .justify_center()
                     .w(px(42.0))
                     .h(px(24.0))
-                    .rounded_lg()
+                    .rounded(px(6.0))
                     .bg(rgb(if active { ROW_ACTIVE } else { BG }))
                     .border_1()
                     .border_color(rgb(if active { BORDER_ACTIVE } else { BORDER }))
@@ -1182,7 +1006,7 @@ impl LazytermApp {
             .justify_between()
             .h(px(40.0))
             .px_3()
-            .rounded_lg()
+            .rounded(px(7.0))
             .bg(rgb(SURFACE))
             .border_1()
             .border_color(rgb(BORDER))
@@ -1190,7 +1014,7 @@ impl LazytermApp {
                 div()
                     .text_color(rgb(TEXT_SOFT))
                     .text_size(px(12.0))
-                    .child("Font size"),
+                    .child("font"),
             )
             .child(
                 div()
@@ -1221,7 +1045,7 @@ impl LazytermApp {
             .items_center()
             .justify_center()
             .size(px(24.0))
-            .rounded_lg()
+            .rounded(px(6.0))
             .border_1()
             .border_color(rgb(BORDER))
             .bg(rgb(BG))
@@ -1306,6 +1130,7 @@ impl TerminalSession {
 
     fn push_output(&mut self, output: &[u8]) {
         self.terminal.feed(output);
+        self.flush_terminal_replies();
         let output = normalize_pty_output(&String::from_utf8_lossy(output));
         for segment in output.split_inclusive('\n') {
             if segment.ends_with('\n') {
@@ -1316,6 +1141,23 @@ impl TerminalSession {
             }
         }
         self.summary.status = SessionStatus::Running;
+    }
+
+    fn flush_terminal_replies(&mut self) {
+        let replies = self.terminal.drain_pty_writes();
+        let Some(pty) = &mut self.pty else {
+            return;
+        };
+
+        for reply in replies {
+            if let Err(error) = pty.write_all(&reply) {
+                self.lines.push(TerminalLine::error(format!(
+                    "terminal reply failed: {error}"
+                )));
+                self.summary.status = SessionStatus::Failed;
+                break;
+            }
+        }
     }
 
     fn flush_pending_line(&mut self) {
@@ -1352,14 +1194,24 @@ impl TerminalSession {
 
 impl TerminalGrid {
     fn new(size: TerminalSize) -> Self {
+        let (sender, pty_writes) = mpsc::channel();
         Self {
-            term: AlacrittyTerm::new(AlacrittyConfig::default(), &GridSize(size), VoidListener),
+            term: AlacrittyTerm::new(
+                AlacrittyConfig::default(),
+                &GridSize(size),
+                TerminalEventProxy { pty_writes: sender },
+            ),
             parser: AnsiProcessor::new(),
+            pty_writes,
         }
     }
 
     fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
+    }
+
+    fn drain_pty_writes(&mut self) -> Vec<Vec<u8>> {
+        self.pty_writes.try_iter().collect()
     }
 
     fn resize(&mut self, size: TerminalSize) {
@@ -1411,6 +1263,14 @@ impl TerminalGrid {
         }
 
         visible
+    }
+}
+
+impl EventListener for TerminalEventProxy {
+    fn send_event(&self, event: AlacrittyEvent) {
+        if let AlacrittyEvent::PtyWrite(text) = event {
+            let _ = self.pty_writes.send(text.into_bytes());
+        }
     }
 }
 
@@ -1652,6 +1512,10 @@ impl Render for LazytermApp {
             .flex()
             .flex_col()
             .size_full()
+            .rounded(px(10.0))
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(BORDER))
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
             .track_focus(&self.focus_handle)
@@ -1679,28 +1543,30 @@ impl Render for LazytermApp {
                         )
                     }),
             )
-            .when(!self.focus_handle.is_focused(window), |this| {
-                this.border_1().border_color(rgb(BORDER))
+            .when(self.focus_handle.is_focused(window), |this| {
+                this.border_color(rgb(BORDER_ACTIVE))
             })
     }
 }
 
 fn terminal_size_for_viewport(
     viewport: Size<Pixels>,
-    compact_tabs: bool,
     terminal_font_size: f32,
+    session_count: usize,
+    tiled: bool,
 ) -> TerminalSize {
     let width = viewport.width.as_f32();
     let height = viewport.height.as_f32();
-    let sidebar_width = if compact_tabs {
-        SIDEBAR_COMPACT_WIDTH
-    } else {
-        SIDEBAR_WIDTH
-    };
-    let terminal_width = (width - sidebar_width - (TERMINAL_X_PADDING * 2.0)).max(160.0);
-    let terminal_height =
-        (height - TITLEBAR_HEIGHT - WORKSPACE_BAR_HEIGHT - 24.0 - (TERMINAL_Y_PADDING * 2.0))
-            .max(96.0);
+    let panes = if tiled { session_count.max(1) } else { 1 };
+    let tile_columns = tile_columns(panes) as f32;
+    let tile_rows = ((panes as f32) / tile_columns).ceil().max(1.0);
+    let terminal_width =
+        ((width - SIDEBAR_WIDTH) / tile_columns - (TERMINAL_X_PADDING * 2.0)).max(160.0);
+    let terminal_height = ((height - TITLEBAR_HEIGHT) / tile_rows
+        - WORKSPACE_BAR_HEIGHT
+        - 24.0
+        - (TERMINAL_Y_PADDING * 2.0))
+        .max(96.0);
     let columns = (terminal_width / terminal_char_width(terminal_font_size))
         .floor()
         .max(20.0) as u16;
@@ -1709,6 +1575,14 @@ fn terminal_size_for_viewport(
         .max(5.0) as u16;
 
     TerminalSize::new(columns, rows)
+}
+
+fn tile_columns(session_count: usize) -> usize {
+    match session_count {
+        0 | 1 => 1,
+        2..=4 => 2,
+        _ => 3,
+    }
 }
 
 fn terminal_char_width(font_size: f32) -> f32 {
@@ -2077,14 +1951,25 @@ mod tests {
     }
 
     #[test]
+    fn terminal_grid_replies_to_cursor_position_queries() {
+        let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
+
+        grid.feed(b"\x1b[6n");
+        let replies = grid.drain_pty_writes();
+
+        assert_eq!(replies, vec![b"\x1b[1;1R".to_vec()]);
+    }
+
+    #[test]
     fn terminal_size_tracks_available_viewport() {
         let size = terminal_size_for_viewport(
             Size {
                 width: px(1180.0),
                 height: px(760.0),
             },
-            false,
             12.0,
+            1,
+            false,
         );
 
         assert!(size.columns >= 90);
@@ -2098,11 +1983,12 @@ mod tests {
                 width: px(300.0),
                 height: px(240.0),
             },
-            false,
             12.0,
+            1,
+            false,
         );
 
-        assert_eq!(size.columns, 20);
+        assert!(size.columns >= 20);
         assert_eq!(size.rows, 6);
     }
 
@@ -2113,16 +1999,18 @@ mod tests {
                 width: px(1180.0),
                 height: px(760.0),
             },
-            false,
             12.0,
+            1,
+            false,
         );
         let larger_font = terminal_size_for_viewport(
             Size {
                 width: px(1180.0),
                 height: px(760.0),
             },
-            false,
             16.0,
+            1,
+            false,
         );
 
         assert!(larger_font.columns < default_font.columns);

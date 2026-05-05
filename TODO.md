@@ -18,23 +18,24 @@
 - [x] Embedded Windows app icon generated from the black-background logo
 - [x] Terminal-first monochrome mux surface without dashboard/helper chrome
 - [x] Ignored external reference clones for cmux/mux, claude-squad, and seance
-- [x] cmux-style workspace sidebar with active shell rows and status metadata
-- [x] In-app settings panel for tab density, metadata, and terminal font size
+- [x] Narrow vertical session rail with active shell state
+- [x] Compact in-app view panel for pane mode and terminal font size
 - [x] ASCII-only window chrome without emoji/symbol buttons
 - [x] Session controls for new, restart, close, and keyboard tab cycling
 - [x] Terminal key passthrough for paste, function keys, alt chords, and generic control chords
 - [x] Tiled multiplexer view for watching multiple shells at once
 - [x] Terminal surface takes focus on app launch
 - [x] Alacritty-backed terminal grid for ANSI parsing and cursor movement
+- [x] Alacritty terminal writeback replies forwarded to the PTY for Windows ConPTY protocol queries
 - [x] Per-cell foreground/background, bold, dim, inverse, underline, and cursor rendering from Alacritty
 - [x] Regenerated Windows app icon from the black-background Lazyterm logo
-- [x] Tighter monochrome chrome pass: narrower rail, cleaner split mode, and less placeholder copy
+- [x] Tighter monochrome chrome pass: narrow rail, cleaner split mode, and less placeholder copy
 
 ## Next
 
 - [ ] Add app socket transport for the CLI/API
 - [ ] Replace demo sessions with persisted session state
-- [ ] Add real split-pane resize handles and per-pane PTY sizing
+- [ ] Add real split-pane resize handles
 - [ ] Add an icon system with a permissive set such as Lucide, Heroicons, Tabler, or Material Symbols
 - [ ] Add installer/release workflow after the app can launch and render reliably
 - [ ] Add dependency license policy enforcement beyond metadata visibility
