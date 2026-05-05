@@ -73,14 +73,33 @@ pub struct LazytermApp {
 #[derive(Clone, Copy, Debug)]
 struct UiSettings {
     tile_sessions: bool,
+    tile_layout: TileLayout,
     terminal_font_size: f32,
     terminal_padding: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+enum TileLayout {
+    Grid,
+    Columns,
+    Rows,
+}
+
+impl TileLayout {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Columns => "columns",
+            Self::Rows => "rows",
+        }
+    }
 }
 
 impl From<PersistedUiSettings> for UiSettings {
     fn from(value: PersistedUiSettings) -> Self {
         Self {
             tile_sessions: value.tile_sessions,
+            tile_layout: value.tile_layout,
             terminal_font_size: value.terminal_font_size.clamp(10.0, 16.0),
             terminal_padding: value.terminal_padding.clamp(8.0, 24.0),
         }
@@ -91,6 +110,7 @@ impl From<UiSettings> for PersistedUiSettings {
     fn from(value: UiSettings) -> Self {
         Self {
             tile_sessions: value.tile_sessions,
+            tile_layout: value.tile_layout,
             terminal_font_size: value.terminal_font_size,
             terminal_padding: value.terminal_padding,
         }
@@ -100,6 +120,8 @@ impl From<UiSettings> for PersistedUiSettings {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 struct PersistedUiSettings {
     tile_sessions: bool,
+    #[serde(default = "default_tile_layout")]
+    tile_layout: TileLayout,
     terminal_font_size: f32,
     #[serde(default = "default_terminal_padding")]
     terminal_padding: f32,
@@ -204,6 +226,9 @@ enum CommandKind {
     NewAider,
     SplitPane,
     ToggleLayout,
+    TileGrid,
+    TileColumns,
+    TileRows,
     RestartPane,
     ClosePane,
     CloseOtherPanes,
@@ -240,6 +265,7 @@ impl LazytermApp {
         start_api_listener(api_sender);
         let ui_settings = load_ui_settings(&state_dir).unwrap_or(UiSettings {
             tile_sessions: false,
+            tile_layout: TileLayout::Grid,
             terminal_font_size: 12.0,
             terminal_padding: DEFAULT_TERMINAL_PADDING,
         });
@@ -394,6 +420,7 @@ impl LazytermApp {
             viewport,
             self.ui_settings.terminal_font_size,
             self.ui_settings.terminal_padding,
+            self.ui_settings.tile_layout,
             self.sessions.len(),
             self.ui_settings.tile_sessions,
         );
@@ -754,7 +781,7 @@ impl LazytermApp {
             return;
         }
 
-        let columns = tile_columns(self.sessions.len());
+        let columns = tile_columns_for_layout(self.sessions.len(), self.ui_settings.tile_layout);
         if let Some(index) =
             directional_session_index(self.active_session, self.sessions.len(), columns, direction)
         {
@@ -808,6 +835,12 @@ impl LazytermApp {
         self.persist_ui_settings();
     }
 
+    fn set_tile_layout(&mut self, layout: TileLayout) {
+        self.ui_settings.tile_layout = layout;
+        self.ui_settings.tile_sessions = true;
+        self.persist_ui_settings();
+    }
+
     fn split_workspace(&mut self) {
         if self.sessions.len() == 1 {
             self.create_terminal();
@@ -826,6 +859,9 @@ impl LazytermApp {
             CommandKind::NewAider => self.create_agent_terminal(AgentKind::Aider),
             CommandKind::SplitPane => self.split_workspace(),
             CommandKind::ToggleLayout => self.toggle_tile_sessions(),
+            CommandKind::TileGrid => self.set_tile_layout(TileLayout::Grid),
+            CommandKind::TileColumns => self.set_tile_layout(TileLayout::Columns),
+            CommandKind::TileRows => self.set_tile_layout(TileLayout::Rows),
             CommandKind::RestartPane => self.restart_active_terminal(),
             CommandKind::ClosePane => self.close_active_terminal(),
             CommandKind::CloseOtherPanes => self.close_other_terminals(),
@@ -894,6 +930,21 @@ impl LazytermApp {
                 kind: CommandKind::ToggleLayout,
                 label: layout_label,
                 shortcut: "ctrl+shift+b",
+            },
+            CommandItem {
+                kind: CommandKind::TileGrid,
+                label: "layout grid",
+                shortcut: "layout",
+            },
+            CommandItem {
+                kind: CommandKind::TileColumns,
+                label: "layout columns",
+                shortcut: "layout",
+            },
+            CommandItem {
+                kind: CommandKind::TileRows,
+                label: "layout rows",
+                shortcut: "layout",
             },
             CommandItem {
                 kind: CommandKind::MaximizePane,
@@ -1270,7 +1321,7 @@ impl LazytermApp {
     }
 
     fn render_tiled_terminals(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let columns = tile_columns(self.sessions.len());
+        let columns = tile_columns_for_layout(self.sessions.len(), self.ui_settings.tile_layout);
         let mut tiles = div()
             .grid()
             .grid_cols(columns as u16)
@@ -1380,6 +1431,7 @@ impl LazytermApp {
                     .text_size(px(11.0))
                     .text_color(rgb(TEXT_DIM))
                     .child(SharedString::from(format!("{} panes", self.sessions.len())))
+                    .child(SharedString::from(self.ui_settings.tile_layout.label()))
                     .child(SharedString::from(format!(
                         "{:.0}px",
                         self.ui_settings.terminal_font_size
@@ -2151,13 +2203,14 @@ fn terminal_size_for_viewport(
     viewport: Size<Pixels>,
     terminal_font_size: f32,
     terminal_padding: f32,
+    tile_layout: TileLayout,
     session_count: usize,
     tiled: bool,
 ) -> TerminalSize {
     let width = viewport.width.as_f32();
     let height = viewport.height.as_f32();
     let panes = if tiled { session_count.max(1) } else { 1 };
-    let tile_columns = tile_columns(panes) as f32;
+    let tile_columns = tile_columns_for_layout(panes, tile_layout) as f32;
     let tile_rows = ((panes as f32) / tile_columns).ceil().max(1.0);
     let terminal_width =
         ((width - SIDEBAR_WIDTH) / tile_columns - (terminal_padding * 2.0)).max(160.0);
@@ -2197,6 +2250,10 @@ fn app_state_dir() -> PathBuf {
 
 fn default_terminal_padding() -> f32 {
     DEFAULT_TERMINAL_PADDING
+}
+
+fn default_tile_layout() -> TileLayout {
+    TileLayout::Grid
 }
 
 fn load_ui_settings(state_dir: &Path) -> Option<UiSettings> {
@@ -2339,11 +2396,15 @@ fn write_api_response(stream: &mut TcpStream, response: &ApiResponse) -> io::Res
     stream.flush()
 }
 
-fn tile_columns(session_count: usize) -> usize {
-    match session_count {
-        0 | 1 => 1,
-        2..=4 => 2,
-        _ => 3,
+fn tile_columns_for_layout(session_count: usize, layout: TileLayout) -> usize {
+    match layout {
+        TileLayout::Grid => match session_count {
+            0 | 1 => 1,
+            2..=4 => 2,
+            _ => 3,
+        },
+        TileLayout::Columns => session_count.max(1),
+        TileLayout::Rows => 1,
     }
 }
 
@@ -2798,6 +2859,7 @@ mod tests {
         let state_dir = test_state_dir("ui-settings");
         let settings = UiSettings {
             tile_sessions: true,
+            tile_layout: TileLayout::Columns,
             terminal_font_size: 15.0,
             terminal_padding: 22.0,
         };
@@ -2806,6 +2868,7 @@ mod tests {
 
         let loaded = load_ui_settings(&state_dir).expect("settings load");
         assert_eq!(loaded.tile_sessions, settings.tile_sessions);
+        assert_eq!(loaded.tile_layout, settings.tile_layout);
         assert_eq!(loaded.terminal_font_size, settings.terminal_font_size);
         assert_eq!(loaded.terminal_padding, settings.terminal_padding);
         let _ = fs::remove_dir_all(state_dir);
@@ -2925,6 +2988,40 @@ mod tests {
     }
 
     #[test]
+    fn tile_layouts_choose_expected_column_counts() {
+        assert_eq!(tile_columns_for_layout(5, TileLayout::Grid), 3);
+        assert_eq!(tile_columns_for_layout(5, TileLayout::Columns), 5);
+        assert_eq!(tile_columns_for_layout(5, TileLayout::Rows), 1);
+    }
+
+    #[test]
+    fn terminal_size_tracks_tile_layout() {
+        let viewport = Size {
+            width: px(1180.0),
+            height: px(760.0),
+        };
+        let columns = terminal_size_for_viewport(
+            viewport,
+            12.0,
+            DEFAULT_TERMINAL_PADDING,
+            TileLayout::Columns,
+            3,
+            true,
+        );
+        let rows = terminal_size_for_viewport(
+            viewport,
+            12.0,
+            DEFAULT_TERMINAL_PADDING,
+            TileLayout::Rows,
+            3,
+            true,
+        );
+
+        assert!(columns.columns < rows.columns);
+        assert!(rows.rows < columns.rows);
+    }
+
+    #[test]
     fn terminal_grid_tracks_cursor_movement_sequences() {
         let mut grid = TerminalGrid::new(TerminalSize::new(12, 3));
 
@@ -3000,6 +3097,7 @@ mod tests {
             },
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            TileLayout::Grid,
             1,
             false,
         );
@@ -3017,6 +3115,7 @@ mod tests {
             },
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            TileLayout::Grid,
             1,
             false,
         );
@@ -3034,6 +3133,7 @@ mod tests {
             },
             12.0,
             DEFAULT_TERMINAL_PADDING,
+            TileLayout::Grid,
             1,
             false,
         );
@@ -3044,6 +3144,7 @@ mod tests {
             },
             16.0,
             DEFAULT_TERMINAL_PADDING,
+            TileLayout::Grid,
             1,
             false,
         );
@@ -3061,6 +3162,7 @@ mod tests {
             },
             12.0,
             8.0,
+            TileLayout::Grid,
             1,
             false,
         );
@@ -3071,6 +3173,7 @@ mod tests {
             },
             12.0,
             24.0,
+            TileLayout::Grid,
             1,
             false,
         );
