@@ -516,7 +516,7 @@ impl LazytermApp {
     fn handle_keystroke(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
         let key = keystroke.key.as_str();
         let modifiers = keystroke.modifiers;
-        let primary = modifiers.platform || (modifiers.control && modifiers.shift);
+        let primary = app_shortcut_modifiers(modifiers);
 
         if self.command_palette_open {
             match key {
@@ -611,6 +611,11 @@ impl LazytermApp {
                 self.activate_session(index);
                 return true;
             }
+        }
+
+        if modifiers.control && !modifiers.shift && !modifiers.alt && key == "v" {
+            self.paste_clipboard(cx);
+            return true;
         }
 
         if modifiers.control && key == "tab" {
@@ -2731,6 +2736,10 @@ fn control_byte_for_key(key: &str) -> Option<u8> {
     }
 }
 
+fn app_shortcut_modifiers(modifiers: gpui::Modifiers) -> bool {
+    (modifiers.control && modifiers.shift) || (cfg!(target_os = "macos") && modifiers.platform)
+}
+
 fn tab_index_for_key(key: &str) -> Option<usize> {
     let value = key.parse::<usize>().ok()?;
     if (1..=9).contains(&value) {
@@ -3126,6 +3135,19 @@ mod tests {
     #[test]
     fn control_byte_for_key_accepts_uppercase_letters() {
         assert_eq!(control_byte_for_key("C"), Some(0x03));
+    }
+
+    #[test]
+    fn app_shortcuts_do_not_steal_plain_control_keys() {
+        assert!(!app_shortcut_modifiers(gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        }));
+        assert!(app_shortcut_modifiers(gpui::Modifiers {
+            control: true,
+            shift: true,
+            ..Default::default()
+        }));
     }
 
     #[test]
