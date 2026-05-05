@@ -1284,6 +1284,10 @@ impl LazytermApp {
         sidebar_width_for_rail(self.ui_settings.rail_width)
     }
 
+    fn show_rail_metadata(&self) -> bool {
+        self.ui_settings.rail_width == RailWidth::Wide
+    }
+
     fn toggle_tile_sessions(&mut self) {
         self.ui_settings.tile_sessions = !self.ui_settings.tile_sessions;
         self.persist_ui_settings();
@@ -1784,6 +1788,7 @@ impl LazytermApp {
         };
         let attention = session_needs_attention(session);
         let tab_background = if active { SURFACE_ACTIVE } else { SIDEBAR };
+        let show_metadata = self.show_rail_metadata();
 
         div()
             .flex()
@@ -1854,17 +1859,21 @@ impl LazytermApp {
                                     })
                                     .child(SharedString::from(session.summary.title.clone())),
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .text_color(rgb(if active { TEXT_MUTED } else { TEXT_DIM }))
-                                    .text_size(px(10.0))
-                                    .child(SharedString::from(status_label(session.summary.status)))
-                                    .child(SharedString::from(" / "))
-                                    .child(SharedString::from(session.summary.agent.label())),
-                            ),
+                            .when(show_metadata, |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_color(rgb(if active { TEXT_MUTED } else { TEXT_DIM }))
+                                        .text_size(px(10.0))
+                                        .child(SharedString::from(status_label(
+                                            session.summary.status,
+                                        )))
+                                        .child(SharedString::from(" / "))
+                                        .child(SharedString::from(session.summary.agent.label())),
+                                )
+                            }),
                     ),
             )
             .id(format!("session-tab-{index}"))
@@ -2243,6 +2252,11 @@ impl LazytermApp {
         let notification = session.summary.notification.as_deref().unwrap_or("");
         let context = session_context_label(session);
         let status = status_label(session.summary.status);
+        let detail = if notification.is_empty() {
+            status.to_string()
+        } else {
+            notification.to_string()
+        };
         div()
             .flex()
             .items_center()
@@ -2269,17 +2283,8 @@ impl LazytermApp {
                     .items_center()
                     .gap_2()
                     .text_color(rgb(TEXT_DIM))
-                    .child(SharedString::from(status))
-                    .child(div().size(px(3.0)).rounded_full().bg(rgb(TEXT_DIM)))
-                    .child(SharedString::from(session.summary.command.clone())),
+                    .child(SharedString::from(detail)),
             )
-            .when(!notification.is_empty(), |this| {
-                this.child(
-                    div()
-                        .text_color(rgb(if focused { TEXT_SOFT } else { TEXT_DIM }))
-                        .child(SharedString::from(notification.to_string())),
-                )
-            })
     }
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
