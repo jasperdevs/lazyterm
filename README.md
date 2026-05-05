@@ -25,6 +25,15 @@ cargo run -p lazyterm-cli --bin lazytermctl -- status
 cargo run -p lazyterm-cli --bin lazytermctl -- send --enter "echo ok"
 ```
 
+## Windows Local Install
+
+```powershell
+cargo build --workspace --release --locked
+.\scripts\install-windows.ps1 -SourceDir .\target\release -Launch
+```
+
+The installer copies the app into `%LOCALAPPDATA%\Programs\Lazyterm`, creates app shortcuts, and adds `lazytermctl` to the user PATH.
+
 ## License
 
 Apache-2.0.

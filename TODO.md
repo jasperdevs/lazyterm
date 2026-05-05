@@ -13,10 +13,11 @@
 - [x] Add stronger shortcut coverage for paste and window/control icons
 - [x] Add a direct draggable rail resize handle with persisted custom width
 - [x] Add first-class font settings without adding persistent dashboard chrome
+- [x] Add a Windows local installer with app shortcuts and PATH setup
 
 ## Next
 
-- [ ] Add packaged installers and signed release artifacts
+- [ ] Add signed release artifacts
 
 ## Done Recently
 

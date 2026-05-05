@@ -48,6 +48,7 @@ jobs:
           New-Item -ItemType Directory -Force dist/lazyterm | Out-Null
           Copy-Item target/release/lazyterm.exe dist/lazyterm/
           Copy-Item target/release/lazytermctl.exe dist/lazyterm/
+          Copy-Item scripts/install-windows.ps1 dist/lazyterm/
           Copy-Item README.md,LICENSE dist/lazyterm/
           Compress-Archive -Path dist/lazyterm/* -DestinationPath dist/${{ matrix.archive }} -Force
       - name: Package Unix
