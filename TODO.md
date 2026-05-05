@@ -19,6 +19,7 @@
 - [x] Add release checksums and optional Windows signing
 - [x] Split persisted UI settings into a focused module
 - [x] Verify release packaging workflow artifacts on GitHub Actions
+- [x] Rewrite README around real usage and release state
 
 ## Next
 
